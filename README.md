@@ -28,7 +28,7 @@ DevDeck/
 ├── src/            # Rust 核心层（SSH/SFTP/Docker/K8s/Tunnel/Stats）
 ├── src-tauri/      # Tauri v2 配置与 capabilities
 ├── frontend/       # React 前端（三栏布局 / Tab / 分屏 / xterm）
-├── docs/           # 设计与评审文档
+├── docs/           # 内部设计/评审文档（本地维护，不入库）
 └── scripts/        # 构建与 CI 辅助脚本
 ```
 

@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Node / 前端
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Rust
+target/
+src-tauri/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 内部文档（评审/规划类，不入库）
+docs/
