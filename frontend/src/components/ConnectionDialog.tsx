@@ -31,6 +31,7 @@ export function ConnectionDialog() {
   const [connecting, setConnecting] = useState(false);
 
   const host = hosts?.find((h) => h.id === connectTarget?.hostId);
+  const hasSavedPassword = !!host?.credentialRef;
 
   const connect = async () => {
     if (!connectTarget) return;
@@ -91,16 +92,22 @@ export function ConnectionDialog() {
 
         <form onSubmit={onSubmit} className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="pw">密码</Label>
+            <Label htmlFor="pw">
+              密码
+              {hasSavedPassword && <span className="ml-1 text-[11px] font-normal text-success">（已存入 Keychain）</span>}
+            </Label>
             <Input
               id="pw"
               type="password"
               autoFocus
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="输入 SSH 密码（留空尝试免密）"
+              placeholder={hasSavedPassword ? "留空即可使用已保存的密码" : "输入 SSH 密码（留空尝试免密）"}
               autoComplete="off"
             />
+            {hasSavedPassword && (
+              <p className="text-[11px] text-muted">此主机已保存密码，直接点击「连接」即可；输入新密码将覆盖旧密码。</p>
+            )}
           </div>
           <div className="flex items-center justify-between rounded-md border border-border-subtle bg-hover-fill px-3 py-2">
             <div className="flex items-center gap-2">

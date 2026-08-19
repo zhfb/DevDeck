@@ -171,6 +171,13 @@ export default function HostsPanel(_props: PanelProps) {
     }
   };
 
+  const openAddDialog = () => {
+    // default the group select to the first group so new hosts don't silently
+    // land in an unexpected env
+    setForm({ ...emptyForm, groupId: groups?.[0]?.id ?? "g-dev" });
+    setAddOpen(true);
+  };
+
   const handleDelete = () => {
     if (!deleteHost) return;
     toast.success(`已删除主机「${deleteHost.name}」（演示模式）`);
@@ -197,7 +204,7 @@ export default function HostsPanel(_props: PanelProps) {
             className="pl-7"
           />
         </div>
-        <Button variant="primary" size="md" className="ml-auto" onClick={() => setAddOpen(true)}>
+        <Button variant="primary" size="md" className="ml-auto" onClick={openAddDialog}>
           <Plus /> 添加主机
         </Button>
       </div>
@@ -244,7 +251,7 @@ export default function HostsPanel(_props: PanelProps) {
             title="暂无主机"
             description="添加你的第一台 SSH 主机，开始管理远程服务器。"
             action={
-              <Button variant="primary" size="md" onClick={() => setAddOpen(true)}>
+              <Button variant="primary" size="md" onClick={openAddDialog}>
                 <Plus /> 添加主机
               </Button>
             }
