@@ -1,7 +1,7 @@
 import { X, PanelRight, MoreHorizontal, Columns2, Rows2 } from "lucide-react";
 import { useWorkspace } from "@/stores/workspace";
 import { cn } from "@/lib/utils";
-import iconApp from "@/assets/icon-app.png";
+import iconApp from "@/assets/icon-app-fig1.png";
 import { TerminalView } from "./panels/TerminalView";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { WorkspaceTab } from "@/stores/workspace";
