@@ -67,8 +67,25 @@ export function TerminalView({ sessionId, hostId, title, env }: TerminalViewProp
         /* WebGL unavailable — fall back to canvas/dom renderer */
       }
       term.open(el);
-      fit.fit();
       termRef.current = term;
+
+      // Fit after the layout settles — a freshly split pane's container can
+      // still be 0-sized when the component mounts, which makes fit() throw
+      // and leaves a black terminal until the next input. Retry with backoff
+      // until the container reports a real size (Tabby does the same guard).
+      const doFit = (attempt = 0) => {
+        if (disposed) return;
+        try {
+          if (el.offsetWidth > 0 && el.offsetHeight > 0) {
+            fit.fit();
+          } else if (attempt < 5) {
+            setTimeout(() => doFit(attempt + 1), 80 * (attempt + 1));
+          }
+        } catch {
+          if (attempt < 5) setTimeout(() => doFit(attempt + 1), 120 * (attempt + 1));
+        }
+      };
+      requestAnimationFrame(() => doFit());
 
       ro = new ResizeObserver(() => {
         try {
@@ -101,25 +118,34 @@ export function TerminalView({ sessionId, hostId, title, env }: TerminalViewProp
 
       // Auto-reconnect: on ssh:status disconnected (network drop detected by
       // keepalive), show a notice, then reconnect with the same session id.
+      // If the network is still down, retry with exponential backoff
+      // (3s → 6s → 12s → 30s cap) until it succeeds or the pane unmounts.
       onEvent<SshSession>("ssh:status", (s) => {
         if (disposed || !term || s.sessionId !== sessionId) return;
         if (s.status === "disconnected") {
           term.writeln("\r\n\x1b[33m--- 连接断开，3 秒后自动重连 ---\x1b[0m");
-          window.setTimeout(async () => {
+          const tryReconnect = (attempt: number) => {
             if (disposed || !term) return;
-            try {
-              await invoke("ssh_reconnect", {
-                sessionId,
-                hostId,
-                cols: term.cols,
-                rows: term.rows,
+            invoke("ssh_reconnect", {
+              sessionId,
+              hostId,
+              cols: term.cols,
+              rows: term.rows,
+            })
+              .then(() => {
+                if (!disposed && term) term.writeln("\x1b[32m--- 已重连 ---\x1b[0m");
+              })
+              .catch((e) => {
+                if (disposed || !term) return;
+                const delay = Math.min(3000 * 2 ** attempt, 30000);
+                term.writeln(
+                  `\x1b[31m--- 重连失败（第 ${attempt + 1} 次）：${String(e).slice(0, 80)}，` +
+                    `${Math.round(delay / 1000)} 秒后重试 ---\x1b[0m`
+                );
+                window.setTimeout(() => tryReconnect(attempt + 1), delay);
               });
-              if (!disposed && term) term.writeln("\x1b[32m--- 已重连 ---\x1b[0m");
-            } catch (e) {
-              if (!disposed && term)
-                term.writeln(`\x1b[31m--- 重连失败：${String(e).slice(0, 140)} ---\x1b[0m`);
-            }
-          }, 3000);
+          };
+          window.setTimeout(() => tryReconnect(0), 3000);
         }
       }).then((u) => (unsubStatus = u));
     } else {

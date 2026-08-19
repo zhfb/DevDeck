@@ -136,7 +136,13 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
                   ...t,
                   splitDir: dir,
                   activePaneId: paneId,
-                  panes: [...t.panes, pane],
+                  // keep the ORIGINAL session as pane "p0" (stable key so the
+                  // existing terminal component keeps its history) and append
+                  // the new independent session as the second pane
+                  panes:
+                    t.panes.length > 0
+                      ? [...t.panes, pane]
+                      : [{ id: "p0", title: t.title, sessionId: t.sessionId }, pane],
                 }
               : t
           ),
