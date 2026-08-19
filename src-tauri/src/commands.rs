@@ -67,7 +67,18 @@ pub async fn hosts_stats_history(state: State<'_, AppState>, host_id: String) ->
 }
 
 #[tauri::command]
-pub async fn hosts_save(state: State<'_, AppState>, host: Host) -> CmdResult<()> {
+pub async fn hosts_save(
+    state: State<'_, AppState>,
+    mut host: Host,
+    password: Option<String>,
+) -> CmdResult<()> {
+    // optional password → Keychain, DB keeps only the account ref
+    if let Some(pw) = password.filter(|p| !p.is_empty()) {
+        let account =
+            crate::infra::keychain::account_for(&host.user, &host.address, host.port);
+        crate::infra::keychain::store_password(&account, &pw).map_err(|e| e.to_string())?;
+        host.credential_ref = Some(account);
+    }
     let db = state.db.lock().await;
     db.upsert_host(&host).map_err(|e| e.to_string())
 }
@@ -216,6 +227,13 @@ pub async fn ssh_connect(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("host not found: {host_id}"))?;
     drop(db);
+
+    // fall back to Keychain-stored password when none typed
+    let password = password.or_else(|| {
+        host.credential_ref
+            .as_deref()
+            .and_then(|r| crate::infra::keychain::load_password(r).ok())
+    });
 
     let session = state
         .ssh

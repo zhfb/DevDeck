@@ -19,7 +19,7 @@ use crate::models::{Host, SshSession};
 
 use russh::client::{AuthResult, Config, DisconnectReason, Handle, Handler};
 use russh::keys::PublicKey;
-use russh::{Channel, ChannelMsg, Disconnect};
+use russh::{ChannelMsg, Disconnect};
 
 #[derive(Error, Debug)]
 pub enum SshError {
@@ -40,9 +40,6 @@ impl From<russh::Error> for SshError {
         SshError::Connect(e.to_string())
     }
 }
-
-/// Channel message type used by russh 0.53 client channels.
-type Msg = russh::client::Msg;
 
 /// Commands the frontend can send into a PTY session.
 pub enum PtyCmd {
@@ -108,28 +105,68 @@ impl SshManager {
 
     async fn authenticate(
         client: &mut Handle<SessionHandler>,
-        user: &str,
+        host: &Host,
         password: Option<&str>,
     ) -> Result<bool, SshError> {
+        // 1) try public key auth with default ~/.ssh keys (G5 — keychain
+        //    private keys arrive in a later pass)
+        if Self::auth_with_keys(client, &host.user).await? {
+            return Ok(true);
+        }
+        // 2) password auth
         match password {
             Some(pw) => Ok(matches!(
                 client
-                    .authenticate_password(user, pw)
+                    .authenticate_password(&host.user, pw)
                     .await
                     .map_err(|e| SshError::Auth(e.to_string()))?,
                 AuthResult::Success
             )),
-            None => {
-                // TODO(G5): ssh-agent / keychain private key auth
-                Ok(matches!(
-                    client
-                        .authenticate_none(user)
-                        .await
-                        .map_err(|e| SshError::Auth(e.to_string()))?,
-                    AuthResult::Success
-                ))
+            None => Ok(matches!(
+                client
+                    .authenticate_none(&host.user)
+                    .await
+                    .map_err(|e| SshError::Auth(e.to_string()))?,
+                AuthResult::Success
+            )),
+        }
+    }
+
+    /// Try `~/.ssh/id_ed25519` / `id_ecdsa` / `id_rsa` (unencrypted) as the
+    /// authentication identity. Returns true on first success.
+    async fn auth_with_keys(
+        client: &mut Handle<SessionHandler>,
+        user: &str,
+    ) -> Result<bool, SshError> {
+        use russh::keys::decode_secret_key;
+        use russh::keys::PrivateKeyWithHashAlg;
+
+        let Some(home) = dirs::home_dir() else {
+            return Ok(false);
+        };
+        for name in ["id_ed25519", "id_ecdsa", "id_rsa"] {
+            let path = home.join(".ssh").join(name);
+            let Ok(pem) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(key) = decode_secret_key(&pem, None) else {
+                tracing::debug!(path = %path.display(), "key unreadable or encrypted — skip");
+                continue;
+            };
+            let key = PrivateKeyWithHashAlg::new(std::sync::Arc::new(key), None);
+            match client.authenticate_publickey(user, key).await {
+                Ok(AuthResult::Success) => {
+                    tracing::info!(path = %path.display(), "public key auth ok");
+                    return Ok(true);
+                }
+                Ok(_) => continue,
+                Err(e) => {
+                    tracing::debug!(path = %path.display(), err = %e, "key auth failed");
+                    continue;
+                }
             }
         }
+        Ok(false)
     }
 
     async fn connect_inner(
@@ -151,7 +188,7 @@ impl SshManager {
 
         let mut client = russh::client::connect(config, addr.as_str(), handler).await?;
 
-        if !Self::authenticate(&mut client, &host.user, password).await? {
+        if !Self::authenticate(&mut client, host, password).await? {
             return Err(SshError::Auth(format!(
                 "authentication failed for {}@{}:{}",
                 host.user, host.address, host.port

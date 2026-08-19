@@ -2,6 +2,7 @@ import { LayoutDashboard, Boxes, Server, Image as ImageIcon, Waypoints, Activity
 import { useWorkspace } from "@/stores/workspace";
 import { useUi } from "@/stores/workspace";
 import { cn } from "@/lib/utils";
+import iconApp from "@/assets/icon-app-transparent.png";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const NAV_ITEMS = [
@@ -29,12 +30,12 @@ export function NavRail({ current, onNavigate }: { current: NavPanelId; onNaviga
           titleBarStyle: Overlay, so app content extends under the titlebar. */}
       <div className="no-drag flex items-center gap-4">
         <div className="flex items-center gap-2 pl-0.5">
-          <div className="flex h-6 w-6 items-center justify-center rounded-[6px] bg-accent shadow-[inset_0_-1px_0_rgba(0,0,0,0.25)]">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h4a2.5 2.5 0 0 1 2.5 2.5v13A2.5 2.5 0 0 1 10.5 21h-4A2.5 2.5 0 0 1 4 18.5v-13Z" stroke="white" strokeWidth="1.8" strokeLinejoin="round" />
-              <path d="M14 7h5.5A1.5 1.5 0 0 1 21 8.5v8a1.5 1.5 0 0 1-1.5 1.5H14v-11Z" stroke="white" strokeWidth="1.8" strokeLinejoin="round" />
-            </svg>
-          </div>
+          <img
+            src={iconApp}
+            alt="DevDeck"
+            className="h-6 w-6 rounded-[6px] shadow-[inset_0_-1px_0_rgba(0,0,0,0.25)]"
+            draggable={false}
+          />
           <span className="text-[14px] font-semibold tracking-tight">DevDeck</span>
         </div>
 

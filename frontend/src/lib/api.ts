@@ -59,6 +59,9 @@ export async function onEvent<T>(event: string, cb: EventCallback<T>): Promise<(
 const now = Date.now();
 const iso = (msAgo: number) => new Date(now - msAgo).toISOString();
 
+/** mock password vault (browser mode only; real app uses Keychain) */
+const mockPasswords = new Map<string, string>();
+
 const mockEngines: DockerEngine[] = [
   {
     id: "eng-orb",
@@ -295,6 +298,17 @@ export const mockHandlers: Record<string, (a: any) => unknown> = {
   "engines.list": async () => mockEngines,
   "hosts.list": async () => mockHosts,
   "hosts.groups": async () => mockGroups,
+  "hosts.save": async ({ host, password }: { host: Host; password?: string | null }) => {
+    await sleep(400);
+    const exists = mockHosts.findIndex((h) => h.id === host.id);
+    if (exists >= 0) mockHosts[exists] = host;
+    else mockHosts.push(host);
+    if (password) {
+      // mock keeps it in-memory only — real app stores in Keychain
+      mockPasswords.set(`${host.user}@${host.address}:${host.port}`, password);
+    }
+    return { ok: true };
+  },
   "hosts.stats": async ({ hostId }: { hostId: string }) => mockHostStats.get(hostId) ?? null,
   "hosts.stats_history": async ({ hostId }: { hostId: string }) => genHistory(hostId),
   "containers.list": async ({ engineId }: { engineId?: string }) =>

@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
 import { useHostGroups, useHosts, useHostStats } from "@/lib/queries";
+import { invoke } from "@/lib/api";
+import { useQueryClient } from "@tanstack/react-query";
 import { useLive, useConnect } from "@/stores/live";
 import { useWorkspace } from "@/stores/workspace";
 import { cn, formatPercent, timeAgo } from "@/lib/utils";
@@ -93,6 +95,7 @@ interface HostForm {
   user: string;
   groupId: string;
   auth: string;
+  password: string;
 }
 
 const emptyForm: HostForm = {
@@ -102,6 +105,7 @@ const emptyForm: HostForm = {
   user: "root",
   groupId: "",
   auth: "password",
+  password: "",
 };
 
 /**
@@ -119,6 +123,7 @@ export default function HostsPanel(_props: PanelProps) {
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState<HostForm>(emptyForm);
   const [deleteHost, setDeleteHost] = useState<Host | null>(null);
+  const queryClient = useQueryClient();
 
   const query = search.trim().toLowerCase();
   const filtered = useMemo(
@@ -137,11 +142,33 @@ export default function HostsPanel(_props: PanelProps) {
     openTab({ kind: "host-detail", title: host.name, hostId: host.id, env: host.env });
   };
 
-  const handleSave = (e: FormEvent<HTMLFormElement>) => {
+  const handleSave = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    toast.success("主机已保存（演示模式）");
-    setAddOpen(false);
-    setForm({ ...emptyForm });
+    try {
+      const group = groups?.find((g) => g.id === form.groupId);
+      await invoke("hosts.save", {
+        host: {
+          id: `h-${Date.now().toString(36)}`,
+          name: form.name.trim(),
+          address: form.address.trim(),
+          port: Number(form.port) || 22,
+          user: form.user.trim() || "root",
+          groupId: group?.id ?? "g-dev",
+          env: group?.env ?? "dev",
+          credentialRef: null,
+          fingerprint: null,
+          lastConnectedAt: null,
+          createdAt: new Date().toISOString(),
+        },
+        password: form.auth === "password" && form.password ? form.password : null,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["hosts"] });
+      toast.success(`已保存主机「${form.name}」`);
+      setAddOpen(false);
+      setForm({ ...emptyForm });
+    } catch (err) {
+      toast.error("保存主机失败", { description: String(err) });
+    }
   };
 
   const handleDelete = () => {
@@ -302,6 +329,19 @@ export default function HostsPanel(_props: PanelProps) {
                 </SelectContent>
               </Select>
             </div>
+            {form.auth === "password" && (
+              <div className="space-y-1.5">
+                <Label htmlFor="host-password">密码（存入 macOS Keychain）</Label>
+                <Input
+                  id="host-password"
+                  type="password"
+                  value={form.password}
+                  onChange={(e) => set("password")(e.target.value)}
+                  placeholder="留空则仅保存主机配置"
+                  autoComplete="new-password"
+                />
+              </div>
+            )}
           </form>
           <DialogFooter>
             <Button variant="secondary" size="md" onClick={() => setAddOpen(false)}>

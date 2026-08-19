@@ -1,6 +1,7 @@
 import { X, PanelRight, MoreHorizontal, Columns2, Rows2 } from "lucide-react";
 import { useWorkspace } from "@/stores/workspace";
 import { cn } from "@/lib/utils";
+import iconApp from "@/assets/icon-app-transparent.png";
 import { TerminalView } from "./panels/TerminalView";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { WorkspaceTab } from "@/stores/workspace";
@@ -155,14 +156,15 @@ function WelcomeScreen({ onOpenPanel }: { onOpenPanel: (p: string) => void }) {
     { id: "monitor", label: "监控", desc: "无 Agent 指标", icon: "📈" },
   ];
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-6 bg-background">
-      <div className="flex flex-col items-center gap-3">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent shadow-[inset_0_-2px_0_rgba(0,0,0,0.25)]">
-          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h4a2.5 2.5 0 0 1 2.5 2.5v13A2.5 2.5 0 0 1 10.5 21h-4A2.5 2.5 0 0 1 4 18.5v-13Z" stroke="white" strokeWidth="1.8" strokeLinejoin="round" />
-            <path d="M14 7h5.5A1.5 1.5 0 0 1 21 8.5v8a1.5 1.5 0 0 1-1.5 1.5H14v-11Z" stroke="white" strokeWidth="1.8" strokeLinejoin="round" />
-          </svg>
-        </div>
+    <div className="grid h-full w-full place-items-center bg-background">
+      <div className="flex flex-col items-center gap-6">
+        <div className="flex flex-col items-center gap-3">
+        <img
+          src={iconApp}
+          alt="DevDeck"
+          className="h-14 w-14 rounded-2xl shadow-[inset_0_-2px_0_rgba(0,0,0,0.25)]"
+          draggable={false}
+        />
         <div className="text-[17px] font-semibold tracking-tight">DevDeck</div>
         <div className="text-[12.5px] text-muted">SSH · SFTP · Docker · 隧道 — macOS 原生工作台</div>
       </div>
@@ -187,6 +189,7 @@ function WelcomeScreen({ onOpenPanel }: { onOpenPanel: (p: string) => void }) {
         <span>双击主机连接</span>
         <span>·</span>
         <span>右键资源操作</span>
+      </div>
       </div>
     </div>
   );
