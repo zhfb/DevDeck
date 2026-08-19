@@ -2,7 +2,7 @@ import { LayoutDashboard, Boxes, Server, Image as ImageIcon, Waypoints, Activity
 import { useWorkspace } from "@/stores/workspace";
 import { useUi } from "@/stores/workspace";
 import { cn } from "@/lib/utils";
-import iconApp from "@/assets/icon-app-fig1.png";
+import iconApp from "@/assets/icon-app.png";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const NAV_ITEMS = [

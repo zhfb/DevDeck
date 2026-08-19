@@ -25,6 +25,27 @@ pub fn run() {
 
     tauri::Builder::default()
         .setup(|app| {
+            // macOS dev 模式：显式设置 Dock 应用图标（dev 二进制无 bundle，Tauri 默认图标是黑底 exec）
+            #[cfg(all(dev, target_os = "macos"))]
+            {
+                use objc2::{AllocAnyThread, MainThreadMarker};
+                use objc2_app_kit::{NSApplication, NSImage};
+                use objc2_foundation::NSData;
+
+                let mtm = unsafe { MainThreadMarker::new_unchecked() };
+                let ns_app = NSApplication::sharedApplication(mtm);
+                let data = NSData::with_bytes(include_bytes!("../icons/icon.png"));
+                let app_icon =
+                    NSImage::initWithData(NSImage::alloc(), &data).expect("creating app icon");
+                tracing::info!(
+                    "devdeck: setting dock icon via NSApp, img={}x{}",
+                    app_icon.size().width,
+                    app_icon.size().height
+                );
+                unsafe { ns_app.setApplicationIconImage(Some(&app_icon)) };
+                tracing::info!("devdeck: dock icon set done");
+            }
+
             let app_handle = app.handle();
 
             // persistent store
