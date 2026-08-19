@@ -6,8 +6,8 @@
 //!   - frontend → Rust: `term_input` / `term_resize` commands
 //!   - session lifecycle events: `ssh:status`
 //!
-//! Phase-2 (pending): known_hosts TOFU (G3), Keychain private keys (G5),
-//! reconnection with buffer replay (G10).
+//! Phase-2 (in progress): keepalive + auto-reconnect (G10). known_hosts
+//! TOFU (G3) and Keychain private keys (G5) remain pending.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -173,8 +173,9 @@ impl SshManager {
         &self,
         host: &Host,
         password: Option<&str>,
+        session_id: Option<String>,
     ) -> Result<(Handle<SessionHandler>, SshSession), SshError> {
-        let session_id = uuid::Uuid::new_v4().simple().to_string();
+        let session_id = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
         let title = format!("{}@{}", host.user, host.address);
         let handler = SessionHandler {
             app: self.app.clone(),
@@ -184,7 +185,12 @@ impl SshManager {
         };
 
         let addr = format!("{}:{}", host.address, host.port);
-        let config = Arc::new(Config::default());
+        let mut config = Config::default();
+        // keepalive every 15s → network drop is detected within ~30-45s and
+        // the session's `disconnected` event fires so the frontend can
+        // auto-reconnect.
+        config.keepalive_interval = Some(std::time::Duration::from_secs(15));
+        let config = Arc::new(config);
 
         let mut client = russh::client::connect(config, addr.as_str(), handler).await?;
 
@@ -214,7 +220,42 @@ impl SshManager {
         cols: u32,
         rows: u32,
     ) -> Result<SshSession, SshError> {
-        let (client, session) = self.connect_inner(host, password).await?;
+        self.connect_pty_inner(host, password, cols, rows, None).await
+    }
+
+    /// Reconnect an existing session id (used by auto-reconnect after a drop).
+    /// Reuses the original session id so the frontend event wiring
+    /// (`term:data:<sid>`) keeps working without re-subscribing.
+    pub async fn reconnect(
+        &self,
+        session_id: &str,
+        host: &Host,
+        cols: u32,
+        rows: u32,
+    ) -> Result<SshSession, SshError> {
+        // drop any stale reader-task mappings for this session id
+        self.ptys.lock().await.remove(session_id);
+        self.handles.lock().await.remove(session_id);
+
+        // credentials: Keychain only — there is no user typing on reconnect
+        let password = host
+            .credential_ref
+            .as_deref()
+            .and_then(|r| crate::infra::keychain::load_password(r).ok());
+
+        self.connect_pty_inner(host, password.as_deref(), cols, rows, Some(session_id.to_string()))
+            .await
+    }
+
+    async fn connect_pty_inner(
+        &self,
+        host: &Host,
+        password: Option<&str>,
+        cols: u32,
+        rows: u32,
+        session_id: Option<String>,
+    ) -> Result<SshSession, SshError> {
+        let (client, session) = self.connect_inner(host, password, session_id).await?;
         let session_id = session.session_id.clone();
 
         let channel = client
@@ -319,7 +360,7 @@ impl SshManager {
     /// so exec would need its own connection (planned with the stats loop).
     #[allow(dead_code)]
     pub async fn exec_standalone(&self, host: &Host, password: Option<&str>, cmd: &str) -> Result<String, SshError> {
-        let (_client, _session) = self.connect_inner(host, password).await?;
+        let (_client, _session) = self.connect_inner(host, password, None).await?;
         // future: open channel on _client, exec, collect output
         let _ = cmd;
         Ok(String::new())

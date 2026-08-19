@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { invoke } from "@/lib/api";
 import type { TerminalTab } from "@/lib/types";
 
 export type TabKind =
@@ -25,6 +26,10 @@ export interface WorkspaceTab {
   panel?: string;
   /** split panes (terminal tabs only) */
   panes: { id: string; sessionId?: string; title: string }[];
+  /** split direction once split ("h" = left/right, "v" = top/bottom) */
+  splitDir?: "h" | "v";
+  /** focused pane id (only meaningful when panes.length > 0) */
+  activePaneId?: string;
   activity?: boolean;
 }
 
@@ -40,9 +45,15 @@ interface WorkspaceState {
   setActivity: (id: string, active: boolean) => void;
   toggleSidebar: () => void;
   setBottomPanel: (p: Partial<WorkspaceState["bottomPanel"]>) => void;
-  /** split the active terminal tab into N panes */
-  splitActive: (dir: "h" | "v") => void;
+  /**
+   * Split the active ssh tab into panes. Each pane gets its own SSH session
+   * (independent PTY). Resolves when the new pane's session is up; rejects
+   * when the host has no Keychain credential (password-only hosts must
+   * reconnect first with a saved password).
+   */
+  splitActive: (dir: "h" | "v") => Promise<string | null>;
   closePane: (tabId: string, paneId: string) => void;
+  setActivePane: (tabId: string, paneId: string) => void;
 }
 
 let tabSeq = 0;
@@ -106,22 +117,64 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   splitActive(dir) {
     const { tabs, activeTabId } = get();
     const tab = tabs.find((t) => t.id === activeTabId);
-    if (!tab || tab.kind !== "ssh") return;
-    const paneId = nextId("pane");
-    set((s) => ({
-      tabs: s.tabs.map((t) =>
-        t.id === tab.id
-          ? { ...t, panes: [...t.panes, { id: paneId, title: t.title, sessionId: t.sessionId }] }
-          : t
-      ),
-    }));
+    if (!tab || tab.kind !== "ssh" || !tab.hostId) return Promise.resolve(null);
+    // New pane = new independent SSH session on the same host (Keychain
+    // credential only — password-typed connections must be saved first).
+    return invoke<{ sessionId: string; title: string }>("ssh_connect", {
+      hostId: tab.hostId,
+      password: null,
+      cols: 100,
+      rows: 30,
+    })
+      .then((session) => {
+        const paneId = nextId("pane");
+        const pane = { id: paneId, title: tab.title, sessionId: session.sessionId };
+        set((s) => ({
+          tabs: s.tabs.map((t) =>
+            t.id === tab.id
+              ? {
+                  ...t,
+                  splitDir: dir,
+                  activePaneId: paneId,
+                  panes: [...t.panes, pane],
+                }
+              : t
+          ),
+        }));
+        return paneId;
+      })
+      .catch((e) => {
+        // rethrow for the caller to surface the Keychain hint
+        throw new Error(
+          String(e).includes("SessionNotFound") || String(e).includes("auth")
+            ? String(e)
+            : `分屏连接失败：${String(e)}`
+        );
+      });
   },
 
   closePane(tabId, paneId) {
+    const { tabs } = get();
+    const tab = tabs.find((t) => t.id === tabId);
+    const pane = tab?.panes.find((p) => p.id === paneId);
+    // best-effort disconnect of the pane's session (fire and forget)
+    if (pane?.sessionId) {
+      void invoke("ssh_disconnect", { sessionId: pane.sessionId }).catch(() => {});
+    }
     set((s) => ({
-      tabs: s.tabs.map((t) =>
-        t.id === tabId ? { ...t, panes: t.panes.filter((p) => p.id !== paneId) } : t
-      ),
+      tabs: s.tabs.map((t) => {
+        if (t.id !== tabId) return t;
+        const panes = t.panes.filter((p) => p.id !== paneId);
+        const activePaneId =
+          t.activePaneId === paneId ? (panes[panes.length - 1]?.id ?? undefined) : t.activePaneId;
+        return { ...t, panes, activePaneId };
+      }),
+    }));
+  },
+
+  setActivePane(tabId, paneId) {
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, activePaneId: paneId } : t)),
     }));
   },
 }));

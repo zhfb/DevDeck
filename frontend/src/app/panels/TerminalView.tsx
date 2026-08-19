@@ -5,7 +5,6 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { isTauri, onEvent, invoke } from "@/lib/api";
 import type { SshSession } from "@/lib/types";
-
 interface TerminalViewProps {
   sessionId?: string;
   hostId?: string;
@@ -87,6 +86,7 @@ export function TerminalView({ sessionId, hostId, title, env }: TerminalViewProp
     // Tauri mode: wire real SSH session — Rust emits `term:data:<sid>`,
     // input/resize go back via term_input / term_resize commands.
     let unsub: (() => void) | undefined;
+    let unsubStatus: (() => void) | undefined;
     let disposed = false;
     if (isTauri && sessionId) {
       onEvent<string>(`term:data:${sessionId}`, (text) => {
@@ -98,6 +98,30 @@ export function TerminalView({ sessionId, hostId, title, env }: TerminalViewProp
       term.onResize(({ cols, rows }) => {
         void invoke("term_resize", { sessionId, cols, rows }).catch(() => {});
       });
+
+      // Auto-reconnect: on ssh:status disconnected (network drop detected by
+      // keepalive), show a notice, then reconnect with the same session id.
+      onEvent<SshSession>("ssh:status", (s) => {
+        if (disposed || !term || s.sessionId !== sessionId) return;
+        if (s.status === "disconnected") {
+          term.writeln("\r\n\x1b[33m--- 连接断开，3 秒后自动重连 ---\x1b[0m");
+          window.setTimeout(async () => {
+            if (disposed || !term) return;
+            try {
+              await invoke("ssh_reconnect", {
+                sessionId,
+                hostId,
+                cols: term.cols,
+                rows: term.rows,
+              });
+              if (!disposed && term) term.writeln("\x1b[32m--- 已重连 ---\x1b[0m");
+            } catch (e) {
+              if (!disposed && term)
+                term.writeln(`\x1b[31m--- 重连失败：${String(e).slice(0, 140)} ---\x1b[0m`);
+            }
+          }, 3000);
+        }
+      }).then((u) => (unsubStatus = u));
     } else {
       // Mock demo shell
       let buf = "";
@@ -148,6 +172,7 @@ export function TerminalView({ sessionId, hostId, title, env }: TerminalViewProp
       disposed = true;
       ro?.disconnect();
       unsub?.();
+      unsubStatus?.();
       try {
         term.dispose();
       } catch {

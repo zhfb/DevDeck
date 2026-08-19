@@ -1,9 +1,11 @@
-import { X, PanelRight, MoreHorizontal, Columns2, Rows2 } from "lucide-react";
+import { useState } from "react";
+import { X, PanelRight, Columns2, Rows2, Loader2 } from "lucide-react";
 import { useWorkspace } from "@/stores/workspace";
 import { cn } from "@/lib/utils";
 import iconApp from "@/assets/icon-app.png";
 import { TerminalView } from "./panels/TerminalView";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { toast } from "sonner";
 import type { WorkspaceTab } from "@/stores/workspace";
 
 /**
@@ -53,24 +55,7 @@ export function TabCanvas({
         ))}
         <div className="mb-1.5 ml-auto mr-2 flex items-center gap-0.5">
           {active?.kind === "ssh" && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button className="flex h-5 items-center gap-0.5 rounded px-1.5 text-[11px] text-secondary hover:bg-hover-fill">
-                  <Columns2 className="h-3 w-3" /> 分屏
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuLabel>分屏</DropdownMenuLabel>
-                <DropdownMenuItem onClick={() => splitActive("h")}>
-                  <Columns2 /> 左右分屏
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => splitActive("v")}>
-                  <Rows2 /> 上下分屏
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem disabled>广播终端 (V1.1)</DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <SplitButton tab={active} />
           )}
         </div>
       </div>
@@ -80,6 +65,57 @@ export function TabCanvas({
         <TabContent tab={active} onOpenPanel={onOpenPanel} />
       </div>
     </main>
+  );
+}
+
+/**
+ * Split button — opens a second SSH session on the same host (Keychain
+ * credential) and renders panes in the chosen direction.
+ */
+function SplitButton({ tab }: { tab: WorkspaceTab }) {
+  const splitActive = useWorkspace((s) => s.splitActive);
+  const [splitting, setSplitting] = useState(false);
+
+  const doSplit = async (dir: "h" | "v") => {
+    if (splitting) return;
+    setSplitting(true);
+    try {
+      const paneId = await splitActive(dir);
+      if (paneId) toast.success(`已分屏（${dir === "h" ? "左右" : "上下"}）`);
+    } catch (e) {
+      const msg = String(e);
+      const hint = msg.includes("auth") || msg.includes("password")
+        ? "该主机未保存凭据（Keychain），无法自动开新会话。请先重新连接并勾选「保存到 Keychain」。"
+        : msg;
+      toast.error("分屏失败", { description: hint });
+    } finally {
+      setSplitting(false);
+    }
+  };
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          disabled={splitting}
+          className="flex h-5 items-center gap-0.5 rounded px-1.5 text-[11px] text-secondary hover:bg-hover-fill disabled:opacity-50"
+        >
+          {splitting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Columns2 className="h-3 w-3" />}
+          分屏
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuLabel>分屏（同主机新会话）</DropdownMenuLabel>
+        <DropdownMenuItem onClick={() => void doSplit("h")}>
+          <Columns2 /> 左右分屏
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => void doSplit("v")}>
+          <Rows2 /> 上下分屏
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem disabled>广播终端 (V1.1)</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -103,15 +139,60 @@ function TabContent({ tab, onOpenPanel }: { tab: WorkspaceTab; onOpenPanel: (p: 
 }
 
 function TerminalTabContent({ tab }: { tab: WorkspaceTab }) {
-  // split panes render side-by-side; single pane fills
+  const closePane = useWorkspace((s) => s.closePane);
+  const setActivePane = useWorkspace((s) => s.setActivePane);
+  // split panes render per splitDir; single pane fills
   const panes = tab.panes.length > 0 ? tab.panes : [{ id: "p0", title: tab.title, sessionId: tab.sessionId }];
+  const splitDir = tab.panes.length > 0 ? (tab.splitDir ?? "h") : undefined;
   return (
-    <div className="flex h-full" style={{ display: "flex" }}>
-      {panes.map((p, i) => (
-        <div key={p.id} className="relative flex-1 overflow-hidden border-border-subtle" style={i > 0 ? { borderLeftWidth: 1 } : undefined}>
-          <TerminalView sessionId={p.sessionId} hostId={tab.hostId} title={p.title} env={tab.env} />
-        </div>
-      ))}
+    <div
+      className="flex h-full"
+      style={{ display: "flex", flexDirection: splitDir === "v" ? "column" : "row" }}
+    >
+      {panes.map((p, i) => {
+        const active = tab.panes.length === 0 || p.id === tab.activePaneId;
+        return (
+          <div
+            key={p.id}
+            onClick={() => setActivePane(tab.id, p.id)}
+            className={cn(
+              "group/pane relative min-h-0 min-w-0 overflow-hidden",
+              splitDir === "v" ? "flex-1" : "flex-1",
+              active ? "z-10" : "z-0"
+            )}
+            style={
+              i > 0
+                ? splitDir === "v"
+                  ? { borderTopWidth: 1, borderTopColor: "var(--border-subtle)" }
+                  : { borderLeftWidth: 1, borderLeftColor: "var(--border-subtle)" }
+                : undefined
+            }
+          >
+            <TerminalView sessionId={p.sessionId} hostId={tab.hostId} title={p.title} env={tab.env} />
+            {/* active-pane outline */}
+            <div
+              className={cn(
+                "pointer-events-none absolute inset-0 transition-opacity",
+                active ? "opacity-100" : "opacity-0"
+              )}
+              style={{ boxShadow: "inset 0 0 0 1px var(--accent)" }}
+            />
+            {/* pane close (only when actually split) */}
+            {tab.panes.length > 0 && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closePane(tab.id, p.id);
+                }}
+                title="关闭此分屏"
+                className="absolute right-1.5 top-1.5 z-20 rounded p-1 text-quaternary opacity-0 transition-opacity hover:bg-active-fill hover:text-secondary group-hover/pane:opacity-100"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

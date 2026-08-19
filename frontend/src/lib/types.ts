@@ -177,6 +177,10 @@ export interface TerminalTab {
   env: Env;
   /** split panes within the tab */
   panes: Pane[];
+  /** split direction once the tab is split ("h" = left/right, "v" = top/bottom) */
+  splitDir?: "h" | "v";
+  /** focused pane id (only meaningful when panes.length > 0) */
+  activePaneId?: string;
 }
 
 export interface Pane {

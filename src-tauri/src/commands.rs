@@ -268,6 +268,31 @@ pub async fn term_resize(state: State<'_, AppState>, session_id: String, cols: u
         .map_err(|e| e.to_string())
 }
 
+/// Reconnect a dropped PTY session (auto-reconnect after keepalive detects
+/// the drop). Reuses the original session id; credentials come from Keychain.
+#[tauri::command]
+pub async fn ssh_reconnect(
+    state: State<'_, AppState>,
+    session_id: String,
+    host_id: String,
+    cols: Option<u32>,
+    rows: Option<u32>,
+) -> CmdResult<SshSession> {
+    let db = state.db.lock().await;
+    let host = db
+        .get_host(&host_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("host not found: {host_id}"))?;
+    drop(db);
+
+    let session = state
+        .ssh
+        .reconnect(&session_id, &host, cols.unwrap_or(80), rows.unwrap_or(24))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(session)
+}
+
 #[tauri::command]
 pub async fn ssh_disconnect(state: State<'_, AppState>, session_id: String) -> CmdResult<()> {
     state.ssh.disconnect(&session_id).await.map_err(|e| e.to_string())
