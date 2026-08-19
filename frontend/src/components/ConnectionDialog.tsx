@@ -38,12 +38,22 @@ export function ConnectionDialog() {
     setConnecting(true);
     try {
       if (isTauri) {
-        const session = await invoke<{ sessionId: string; title: string }>("ssh_connect", {
-          hostId: connectTarget.hostId,
-          password: password || null,
-          cols: 100,
-          rows: 30,
-        });
+        // Bound the invoke — a hung SSH handshake must not leave the dialog
+        // spinning forever (backend now also timeouts, this is a UI safety net).
+        const session = await Promise.race([
+          invoke<{ sessionId: string; title: string }>("ssh_connect", {
+            hostId: connectTarget.hostId,
+            password: password || null,
+            cols: 100,
+            rows: 30,
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("连接超时（15 秒），请检查主机地址、网络或防火墙")),
+              15000
+            )
+          ),
+        ]);
         openTab({
           kind: "ssh",
           title: session.title || connectTarget.hostName,

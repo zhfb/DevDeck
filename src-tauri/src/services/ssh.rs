@@ -188,18 +188,46 @@ impl SshManager {
         let mut config = Config::default();
         // keepalive every 15s → network drop is detected within ~30-45s and
         // the session's `disconnected` event fires so the frontend can
-        // auto-reconnect.
+        // auto-reconnect. keepalive_max (default 3) closes the connection
+        // after that many unanswered keepalives.
         config.keepalive_interval = Some(std::time::Duration::from_secs(15));
         let config = Arc::new(config);
 
-        let mut client = russh::client::connect(config, addr.as_str(), handler).await?;
+        // Bound the TCP connect + SSH handshake (russh connect() has NO
+        // timeout of its own — an unreachable host would hang the command
+        // for ~75s and the UI looks frozen). Mirrors r-shell's pattern.
+        tracing::info!(host = %host.address, port = host.port, "ssh: connecting (tcp+handshake, 10s)");
+        let mut client = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            russh::client::connect(config, addr.as_str(), handler),
+        )
+        .await
+        .map_err(|_| {
+            SshError::Connect(format!(
+                "连接超时：{}:{} 无响应（10 秒），请检查主机地址、网络或防火墙",
+                host.address, host.port
+            ))
+        })??;
 
-        if !Self::authenticate(&mut client, host, password).await? {
+        tracing::info!(host = %host.address, "ssh: handshake ok, authenticating (10s)");
+        let authenticated = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            Self::authenticate(&mut client, host, password),
+        )
+        .await
+        .map_err(|_| {
+            SshError::Auth(format!(
+                "认证超时：{}@{} 未响应（10 秒）",
+                host.user, host.address
+            ))
+        })??;
+        if !authenticated {
             return Err(SshError::Auth(format!(
                 "authentication failed for {}@{}:{}",
                 host.user, host.address, host.port
             )));
         }
+        tracing::info!(host = %host.address, "ssh: authenticated");
 
         let session = SshSession {
             session_id: session_id.clone(),
