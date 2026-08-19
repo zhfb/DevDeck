@@ -1,0 +1,37 @@
+[package]
+name = "devdeck"
+version = "0.1.0"
+description = "DevDeck — macOS native SSH/SFTP/Docker workbench"
+authors = ["zhfb"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "devdeck_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "process", "fs", "signal"] }
+bollard = "0.17"
+russh = "0.53"
+security-framework = "3"
+rusqlite = { version = "0.32", features = ["chrono"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "6"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+futures-util = "0.3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+opt-level = "s"

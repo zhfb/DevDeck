@@ -1,0 +1,605 @@
+import { useMemo, useState } from "react";
+import {
+  Boxes,
+  Info,
+  Pause,
+  Play,
+  Plus,
+  RefreshCw,
+  RotateCw,
+  ScrollText,
+  Square,
+  Terminal,
+  Trash2,
+} from "lucide-react";
+import type { PanelProps } from "@/features/registry";
+import { useContainerAction, useContainers, useEngines } from "@/lib/queries";
+import {
+  cn,
+  containerStatusDot,
+  formatBytes,
+  formatDateTime,
+  formatDuration,
+  formatPercent,
+  truncateId,
+} from "@/lib/utils";
+import type { Container, ContainerState, PortMapping } from "@/lib/types";
+import { useWorkspace } from "@/stores/workspace";
+import { EmptyState, EngineBadge } from "@/components/shared";
+import { StatusBadge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "@/components/ui/sonner";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+
+type ActionVerb = "start" | "stop" | "restart" | "pause" | "remove";
+
+const ACTION_LABEL: Record<ActionVerb, string> = {
+  start: "启动",
+  stop: "停止",
+  restart: "重启",
+  pause: "暂停",
+  remove: "删除",
+};
+
+const STATE_LABEL: Record<ContainerState, string> = {
+  running: "运行中",
+  paused: "已暂停",
+  exited: "已退出",
+  created: "已创建",
+  restarting: "重启中",
+  dead: "已死亡",
+  removing: "删除中",
+};
+
+type BadgeVariant = "running" | "paused" | "stopped" | "danger" | "neutral";
+
+function statusVariant(state: ContainerState): BadgeVariant {
+  switch (state) {
+    case "running":
+      return "running";
+    case "paused":
+      return "paused";
+    case "exited":
+    case "created":
+      return "stopped";
+    case "dead":
+      return "danger";
+    default:
+      return "neutral";
+  }
+}
+
+function formatPorts(ports: PortMapping[]): string {
+  return ports
+    .map((p) =>
+      p.publicPort != null ? `${p.publicPort}→${p.privatePort}` : `${p.privatePort}/${p.type}`
+    )
+    .join(", ");
+}
+
+function formatUptime(c: Container): string {
+  if (c.startedAt && (c.state === "running" || c.state === "paused" || c.state === "restarting")) {
+    return formatDuration((Date.now() - new Date(c.startedAt).getTime()) / 1000);
+  }
+  return formatDateTime(c.created);
+}
+
+/** Container management panel — §4.1 of docs/管理面板规划.md */
+export default function ContainersPanel(_props: PanelProps) {
+  const { data: engines } = useEngines();
+  const [engineFilter, setEngineFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "running" | "paused" | "exited">("all");
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const { data: containers, isLoading, isFetching, refetch } = useContainers(
+    engineFilter === "all" ? undefined : engineFilter
+  );
+  const containerAction = useContainerAction();
+  const { openTab, setBottomPanel } = useWorkspace();
+
+  const [confirmDelete, setConfirmDelete] = useState<{
+    title: string;
+    desc: string;
+    onConfirm: () => void;
+  } | null>(null);
+  const [runOpen, setRunOpen] = useState(false);
+  const [runName, setRunName] = useState("");
+  const [runImage, setRunImage] = useState("");
+  const [runPorts, setRunPorts] = useState("");
+
+  const engineById = useMemo(
+    () => new Map((engines ?? []).map((e) => [e.id, e])),
+    [engines]
+  );
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return (containers ?? []).filter((c) => {
+      if (statusFilter !== "all" && c.state !== statusFilter) return false;
+      if (q && !c.name.toLowerCase().includes(q) && !c.id.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [containers, statusFilter, search]);
+
+  const runAction = (c: Container, action: ActionVerb) => {
+    containerAction.mutate(
+      { action, id: c.id },
+      {
+        onSuccess: () => toast.success(`已${ACTION_LABEL[action]} ${c.name}`),
+        onError: (e) => toast.error(`${ACTION_LABEL[action]} ${c.name} 失败`, { description: String(e) }),
+      }
+    );
+  };
+
+  const runBatch = (action: ActionVerb) => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    const verb = ACTION_LABEL[action];
+    let ok = 0;
+    let err = 0;
+    const finish = () => {
+      if (ok + err < ids.length) return;
+      if (err > 0) toast.error(`批量${verb}完成：${ok} 成功，${err} 失败`);
+      else toast.success(`已${verb} ${ok} 个容器`);
+      setSelected(new Set());
+    };
+    ids.forEach((id) => {
+      containerAction.mutate(
+        { action, id },
+        {
+          onSuccess: () => {
+            ok += 1;
+            finish();
+          },
+          onError: () => {
+            err += 1;
+            finish();
+          },
+        }
+      );
+    });
+  };
+
+  const openShell = (c: Container) => {
+    openTab({ kind: "ssh", title: `${c.name} Shell`, containerId: c.id, engineId: c.engineId, env: "none" });
+  };
+
+  const openLogs = () => {
+    setBottomPanel({ open: true, tab: "logs" });
+  };
+
+  const openDetail = (c: Container) => {
+    openTab({ kind: "container-detail", title: c.name, containerId: c.id, env: "none" });
+  };
+
+  const askDelete = (c: Container) => {
+    setConfirmDelete({
+      title: "删除容器",
+      desc: `确定删除容器 ${c.name}？此操作不可撤销。`,
+      onConfirm: () => runAction(c, "remove"),
+    });
+  };
+
+  const askBatchDelete = () => {
+    const n = selected.size;
+    setConfirmDelete({
+      title: "批量删除容器",
+      desc: `确定删除选中的 ${n} 个容器？此操作不可撤销。`,
+      onConfirm: () => runBatch("remove"),
+    });
+  };
+
+  const toggleAll = (checked: boolean | "indeterminate") => {
+    if (checked === true) setSelected(new Set(filtered.map((c) => c.id)));
+    else setSelected(new Set());
+  };
+
+  const toggleOne = (id: string, checked: boolean | "indeterminate") => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked === true) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  const allChecked: boolean | "indeterminate" =
+    filtered.length > 0 && selected.size === filtered.length
+      ? true
+      : selected.size > 0
+        ? "indeterminate"
+        : false;
+
+  const submitRunPlaceholder = () => {
+    setRunOpen(false);
+    setRunName("");
+    setRunImage("");
+    setRunPorts("");
+    toast.success("功能开发中：已创建运行任务");
+  };
+
+  return (
+    <div className="relative flex h-full flex-col overflow-hidden bg-background">
+      {/* Toolbar */}
+      <div className="flex items-center gap-2 border-b border-border-subtle px-3 py-2">
+        <Select value={engineFilter} onValueChange={setEngineFilter}>
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="全部引擎" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部引擎</SelectItem>
+            {(engines ?? []).map((e) => (
+              <SelectItem key={e.id} value={e.id}>
+                {e.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as typeof statusFilter)}>
+          <SelectTrigger className="w-32">
+            <SelectValue placeholder="全部状态" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部状态</SelectItem>
+            <SelectItem value="running">运行中</SelectItem>
+            <SelectItem value="paused">已暂停</SelectItem>
+            <SelectItem value="exited">已退出</SelectItem>
+          </SelectContent>
+        </Select>
+        <Input
+          className="w-56"
+          placeholder="搜索容器名称或 ID…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <div className="flex-1" />
+        <Button variant="secondary" size="sm" onClick={() => refetch()} disabled={isFetching}>
+          <RefreshCw className={cn(isFetching && "animate-spin")} />
+          刷新
+        </Button>
+        <Button variant="primary" size="sm" onClick={() => setRunOpen(true)}>
+          <Plus />
+          运行容器
+        </Button>
+      </div>
+
+      {/* Table */}
+      <div className="min-h-0 flex-1 overflow-auto">
+        {isLoading && !containers ? (
+          <div className="p-2">
+            {Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className="flex items-center gap-3 border-b border-border-subtle px-2.5 py-2">
+                <Skeleton className="h-3.5 w-3.5" />
+                <Skeleton className="h-4 w-36" />
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-4 w-40" />
+                <Skeleton className="h-4 w-16" />
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-4 w-12" />
+                <Skeleton className="h-4 w-20" />
+                <Skeleton className="h-4 w-16" />
+              </div>
+            ))}
+          </div>
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            icon={Boxes}
+            title="暂无容器"
+            description="本地引擎不可用或没有容器"
+            action={
+              <Button variant="secondary" size="sm" onClick={() => refetch()}>
+                <RefreshCw />
+                刷新
+              </Button>
+            }
+          />
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="w-8">
+                  <Checkbox checked={allChecked} onCheckedChange={toggleAll} aria-label="全选" />
+                </TableHead>
+                <TableHead>名称 / ID</TableHead>
+                <TableHead>引擎来源</TableHead>
+                <TableHead>镜像</TableHead>
+                <TableHead>状态</TableHead>
+                <TableHead>端口</TableHead>
+                <TableHead className="text-right">CPU</TableHead>
+                <TableHead>内存</TableHead>
+                <TableHead>运行时长</TableHead>
+                <TableHead className="w-24 text-right">操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.map((c) => {
+                const eng = engineById.get(c.engineId);
+                const running = c.state === "running";
+                return (
+                  <ContextMenu key={c.id}>
+                    <ContextMenuTrigger asChild>
+                      <TableRow className="group" data-state={selected.has(c.id) ? "selected" : undefined}>
+                        <TableCell>
+                          <Checkbox
+                            checked={selected.has(c.id)}
+                            onCheckedChange={(v) => toggleOne(c.id, v)}
+                            aria-label={`选择 ${c.name}`}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <span className={cn("dot shrink-0", containerStatusDot(c.state))} />
+                            <div className="min-w-0">
+                              <div className="max-w-44 truncate text-[13px] text-foreground" title={c.name}>
+                                {c.name}
+                              </div>
+                              <div className="mono-caption text-quaternary">{truncateId(c.id)}</div>
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          {eng ? <EngineBadge kind={eng.kind} hostName={eng.name} /> : <span className="text-quaternary">—</span>}
+                        </TableCell>
+                        <TableCell>
+                          <span className="mono-caption block max-w-44 truncate text-secondary" title={c.image}>
+                            {c.image}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <StatusBadge
+                            label={STATE_LABEL[c.state]}
+                            variant={statusVariant(c.state)}
+                            dotClass={containerStatusDot(c.state)}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <span className="mono-caption text-secondary">{formatPorts(c.ports)}</span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className="mono text-secondary">{formatPercent(c.cpuPercent)}</span>
+                        </TableCell>
+                        <TableCell>
+                          <span className="mono-caption text-secondary">
+                            {c.memLimit ? `${formatBytes(c.memUsage)} / ${formatBytes(c.memLimit)}` : formatBytes(c.memUsage)}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-secondary">{formatUptime(c)}</span>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                            <RowAction title="启动" disabled={running} onClick={() => runAction(c, "start")}>
+                              <Play />
+                            </RowAction>
+                            <RowAction title="停止" disabled={!running} onClick={() => runAction(c, "stop")}>
+                              <Square />
+                            </RowAction>
+                            <RowAction title="重启" disabled={!running} onClick={() => runAction(c, "restart")}>
+                              <RotateCw />
+                            </RowAction>
+                            <RowAction title="暂停" disabled={!running} onClick={() => runAction(c, "pause")}>
+                              <Pause />
+                            </RowAction>
+                            <RowAction title="删除" danger onClick={() => askDelete(c)}>
+                              <Trash2 />
+                            </RowAction>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    </ContextMenuTrigger>
+                    <ContextMenuContent>
+                      <ContextMenuLabel className="mono">{c.name}</ContextMenuLabel>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem disabled={running} onSelect={() => runAction(c, "start")}>
+                        <Play />
+                        启动
+                      </ContextMenuItem>
+                      <ContextMenuItem disabled={!running} onSelect={() => runAction(c, "stop")}>
+                        <Square />
+                        停止
+                      </ContextMenuItem>
+                      <ContextMenuItem disabled={!running} onSelect={() => runAction(c, "restart")}>
+                        <RotateCw />
+                        重启
+                      </ContextMenuItem>
+                      <ContextMenuItem disabled={!running} onSelect={() => runAction(c, "pause")}>
+                        <Pause />
+                        暂停
+                      </ContextMenuItem>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem onSelect={() => openShell(c)}>
+                        <Terminal />
+                        进入 Shell
+                      </ContextMenuItem>
+                      <ContextMenuItem onSelect={openLogs}>
+                        <ScrollText />
+                        查看日志
+                      </ContextMenuItem>
+                      <ContextMenuItem onSelect={() => openDetail(c)}>
+                        <Info />
+                        详情
+                      </ContextMenuItem>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem className="text-danger" onSelect={() => askDelete(c)}>
+                        <Trash2 />
+                        删除
+                      </ContextMenuItem>
+                    </ContextMenuContent>
+                  </ContextMenu>
+                );
+              })}
+            </TableBody>
+          </Table>
+        )}
+      </div>
+
+      {/* Batch action bar */}
+      {selected.size > 0 && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center">
+          <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-border bg-elevated py-1.5 pl-3.5 pr-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+            <span className="text-[12px] text-secondary">已选 {selected.size} 项</span>
+            <Button variant="secondary" size="sm" onClick={() => runBatch("start")}>
+              <Play />
+              启动
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => runBatch("stop")}>
+              <Square />
+              停止
+            </Button>
+            <Button variant="danger" size="sm" onClick={askBatchDelete}>
+              <Trash2 />
+              删除
+            </Button>
+            <button
+              onClick={() => setSelected(new Set())}
+              className="ml-1 flex h-6 w-6 items-center justify-center rounded-full text-quaternary transition-colors hover:bg-hover-fill hover:text-secondary"
+              title="取消选择"
+            >
+              <span className="text-[12px] leading-none">✕</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation */}
+      <AlertDialog
+        open={confirmDelete !== null}
+        onOpenChange={(o) => {
+          if (!o) setConfirmDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmDelete?.title}</AlertDialogTitle>
+            <AlertDialogDescription>{confirmDelete?.desc}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                confirmDelete?.onConfirm();
+                setConfirmDelete(null);
+              }}
+            >
+              删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Run container placeholder dialog */}
+      <Dialog open={runOpen} onOpenChange={setRunOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>运行容器</DialogTitle>
+            <DialogDescription>输入镜像与端口映射，创建新容器。</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div className="grid gap-1.5">
+              <Label>容器名称</Label>
+              <Input placeholder="例如 my-app" value={runName} onChange={(e) => setRunName(e.target.value)} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>镜像</Label>
+              <Input placeholder="例如 nginx:latest" value={runImage} onChange={(e) => setRunImage(e.target.value)} />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>端口映射</Label>
+              <Input
+                placeholder="例如 8080:80（宿主机:容器）"
+                value={runPorts}
+                onChange={(e) => setRunPorts(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="secondary" size="md" onClick={() => setRunOpen(false)}>
+              取消
+            </Button>
+            <Button variant="primary" size="md" disabled={!runImage.trim()} onClick={submitRunPlaceholder}>
+              运行
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function RowAction({
+  title,
+  danger,
+  disabled,
+  onClick,
+  children,
+}: {
+  title: string;
+  danger?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title={title}
+          disabled={disabled}
+          onClick={onClick}
+          className={cn(danger && "text-muted hover:bg-danger-tint hover:text-danger")}
+        >
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{title}</TooltipContent>
+    </Tooltip>
+  );
+}

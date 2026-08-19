@@ -1,0 +1,157 @@
+import { create } from "zustand";
+import type { TerminalTab } from "@/lib/types";
+
+export type TabKind =
+  | "ssh"
+  | "docker-exec"
+  | "local"
+  | "dashboard"
+  | "panel"
+  | "container-detail"
+  | "host-detail";
+
+export interface WorkspaceTab {
+  id: string;
+  kind: TabKind;
+  title: string;
+  subtitle?: string;
+  env: "dev" | "staging" | "prod" | "none";
+  /** payload per kind */
+  hostId?: string;
+  containerId?: string;
+  engineId?: string;
+  sessionId?: string;
+  /** panel tab: which management panel to render (containers/hosts/images/tunnels/monitor/settings) */
+  panel?: string;
+  /** split panes (terminal tabs only) */
+  panes: { id: string; sessionId?: string; title: string }[];
+  activity?: boolean;
+}
+
+interface WorkspaceState {
+  tabs: WorkspaceTab[];
+  activeTabId: string | null;
+  /** docked bottom panel state */
+  bottomPanel: { open: boolean; tab: "logs" | "events" | "tasks"; height: number };
+  sidebarCollapsed: boolean;
+  openTab: (tab: Omit<WorkspaceTab, "id" | "panes"> & { panes?: WorkspaceTab["panes"] }) => string;
+  closeTab: (id: string) => void;
+  setActiveTab: (id: string) => void;
+  setActivity: (id: string, active: boolean) => void;
+  toggleSidebar: () => void;
+  setBottomPanel: (p: Partial<WorkspaceState["bottomPanel"]>) => void;
+  /** split the active terminal tab into N panes */
+  splitActive: (dir: "h" | "v") => void;
+  closePane: (tabId: string, paneId: string) => void;
+}
+
+let tabSeq = 0;
+const nextId = (p: string) => `${p}-${Date.now().toString(36)}-${++tabSeq}`;
+
+export const useWorkspace = create<WorkspaceState>((set, get) => ({
+  tabs: [],
+  activeTabId: null,
+  bottomPanel: { open: false, tab: "logs", height: 180 },
+  sidebarCollapsed: false,
+
+  openTab(tab) {
+    const existing = get().tabs.find(
+      (t) =>
+        t.kind === tab.kind &&
+        (tab.kind === "dashboard" || t.hostId === tab.hostId) &&
+        (tab.kind !== "container-detail" || t.containerId === tab.containerId) &&
+        (tab.kind !== "host-detail" || t.hostId === tab.hostId)
+    );
+    if (existing && tab.kind !== "ssh") {
+      set({ activeTabId: existing.id });
+      return existing.id;
+    }
+    const id = nextId("tab");
+    const t: WorkspaceTab = { ...tab, id, panes: tab.panes ?? [] };
+    set((s) => ({ tabs: [...s.tabs, t], activeTabId: id }));
+    return id;
+  },
+
+  closeTab(id) {
+    set((s) => {
+      const idx = s.tabs.findIndex((t) => t.id === id);
+      const tabs = s.tabs.filter((t) => t.id !== id);
+      let active = s.activeTabId;
+      if (active === id) {
+        const next = tabs[Math.min(idx, tabs.length - 1)];
+        active = next ? next.id : null;
+      }
+      return { tabs, activeTabId: active };
+    });
+  },
+
+  setActiveTab(id) {
+    set({ activeTabId: id });
+  },
+
+  setActivity(id, activity) {
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.id === id ? { ...t, activity } : t)),
+    }));
+  },
+
+  toggleSidebar() {
+    set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed }));
+  },
+
+  setBottomPanel(p) {
+    set((s) => ({ bottomPanel: { ...s.bottomPanel, ...p } }));
+  },
+
+  splitActive(dir) {
+    const { tabs, activeTabId } = get();
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (!tab || tab.kind !== "ssh") return;
+    const paneId = nextId("pane");
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === tab.id
+          ? { ...t, panes: [...t.panes, { id: paneId, title: t.title, sessionId: t.sessionId }] }
+          : t
+      ),
+    }));
+  },
+
+  closePane(tabId, paneId) {
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === tabId ? { ...t, panes: t.panes.filter((p) => p.id !== paneId) } : t
+      ),
+    }));
+  },
+}));
+
+// ---------------------------------------------------------------------------
+// UI chrome state
+// ---------------------------------------------------------------------------
+interface UiState {
+  theme: "dark" | "light";
+  commandPaletteOpen: boolean;
+  setTheme: (t: "dark" | "light") => void;
+  toggleTheme: () => void;
+  setCommandPaletteOpen: (open: boolean) => void;
+  toggleCommandPalette: () => void;
+}
+
+export const useUi = create<UiState>((set, get) => ({
+  theme: "dark",
+  commandPaletteOpen: false,
+  setTheme(theme) {
+    document.documentElement.dataset.theme = theme;
+    set({ theme });
+  },
+  toggleTheme() {
+    get().setTheme(get().theme === "dark" ? "light" : "dark");
+  },
+  setCommandPaletteOpen(open) {
+    set({ commandPaletteOpen: open });
+  },
+  toggleCommandPalette() {
+    set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen }));
+  },
+}));
