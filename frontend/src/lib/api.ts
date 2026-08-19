@@ -310,6 +310,17 @@ export const mockHandlers: Record<string, (a: any) => unknown> = {
   "app.info": async () => ({ version: "0.1.0", backend: "mock", platform: navigator.platform }),
 };
 
+// SSH mock handlers (object literal continues separately — see above)
+mockHandlers["ssh_connect"] = async (a: { hostId: string }) => ({
+  sessionId: `sess-mock-${a.hostId}`,
+  hostId: a.hostId,
+  title: "demo",
+  status: "connected",
+  startedAt: new Date().toISOString(),
+});
+mockHandlers["term_input"] = async () => ({ ok: true });
+mockHandlers["term_resize"] = async () => ({ ok: true });
+
 // Mutation handlers — simulate latency + state change, keep UI responsive
 mockHandlers["containers.start"] = async ({ id }: { id: string }) => {
   await sleep(600);

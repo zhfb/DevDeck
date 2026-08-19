@@ -54,3 +54,18 @@ export const usePalette = create<PaletteState>((set, get) => ({
     return () => set((s) => ({ actions: s.actions.filter((x) => x.id !== a.id) }));
   },
 }));
+
+// ---------------------------------------------------------------------------
+// SSH connect dialog — every "connect" entry point opens this
+// ---------------------------------------------------------------------------
+interface ConnectState {
+  connectTarget: { hostId: string; hostName: string; address: string; user: string } | null;
+  openConnect: (t: { hostId: string; hostName: string; address: string; user: string }) => void;
+  closeConnect: () => void;
+}
+
+export const useConnect = create<ConnectState>((set) => ({
+  connectTarget: null,
+  openConnect: (t) => set({ connectTarget: t }),
+  closeConnect: () => set({ connectTarget: null }),
+}));

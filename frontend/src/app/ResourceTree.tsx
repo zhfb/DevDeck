@@ -17,7 +17,8 @@ import {
 } from "lucide-react";
 import { useEngines, useHosts, useHostGroups, useTunnels, useContainers } from "@/lib/queries";
 import { useWorkspace } from "@/stores/workspace";
-import { useLive } from "@/stores/live";
+import { useLive, useConnect } from "@/stores/live";
+import type { Host } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { EngineBadge, EnvTag } from "@/components/shared";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuLabel, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -85,6 +86,7 @@ export function ResourceTree({
   const { data: tunnels } = useTunnels();
   const { data: containers } = useContainers();
   const { hostOnline, sessions } = useLive();
+  const openConnect = useConnect((s) => s.openConnect);
   const { openTab, setActiveTab } = useWorkspace();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     "engine-local": true,
@@ -94,8 +96,8 @@ export function ResourceTree({
 
   const toggle = (key: string) => setExpanded((e) => ({ ...e, [key]: !e[key] }));
 
-  const connectHost = (hostId: string, title: string) => {
-    openTab({ kind: "ssh", title, hostId, env: "dev" });
+  const connectHost = (host: Host) => {
+    openConnect({ hostId: host.id, hostName: host.name, address: host.address, user: host.user });
   };
 
   const openHostDetail = (hostId: string, title: string) => {
@@ -235,7 +237,7 @@ export function ResourceTree({
                           <TreeNode
                             selected={currentPanel === "hosts"}
                             onSelect={() => openHostDetail(h.id, h.name)}
-                            onDoubleClick={() => connectHost(h.id, h.name)}
+                            onDoubleClick={() => connectHost(h)}
                           >
                             <span
                               className={cn("dot", online ? "bg-success" : "bg-quaternary")}
@@ -249,7 +251,7 @@ export function ResourceTree({
                         <ContextMenuContent>
                           <ContextMenuLabel className="mono">{h.user}@{h.address}:{h.port}</ContextMenuLabel>
                           <ContextMenuSeparator />
-                          <ContextMenuItem onSelect={() => connectHost(h.id, h.name)}>
+                          <ContextMenuItem onSelect={() => connectHost(h)}>
                             <Terminal /> 连接 SSH
                           </ContextMenuItem>
                           <ContextMenuItem onSelect={() => openHostDetail(h.id, h.name)}>主机详情</ContextMenuItem>

@@ -23,8 +23,10 @@ export function NavRail({ current, onNavigate }: { current: NavPanelId; onNaviga
   const setBottomPanel = useWorkspace((s) => s.setBottomPanel);
 
   return (
-    <header className="drag-region flex h-11 shrink-0 items-center justify-between border-b border-border-subtle bg-panel px-3">
-      {/* Brand + primary nav */}
+    <header className="drag-region flex h-11 shrink-0 items-center justify-between border-b border-border-subtle bg-panel pl-[76px] pr-3">
+      {/* Brand + primary nav.
+          pl-[76px] reserves the macOS traffic-light buttons: the window uses
+          titleBarStyle: Overlay, so app content extends under the titlebar. */}
       <div className="no-drag flex items-center gap-4">
         <div className="flex items-center gap-2 pl-0.5">
           <div className="flex h-6 w-6 items-center justify-center rounded-[6px] bg-accent shadow-[inset_0_-1px_0_rgba(0,0,0,0.25)]">

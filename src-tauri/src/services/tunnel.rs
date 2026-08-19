@@ -3,6 +3,9 @@
 //! Phase-1 scope: CRUD + status in SQLite, commands for start/stop.
 //! Phase-2 (V1.0): real forwarding via russh direct-tcpip / streamlocal —
 //! each active tunnel owns a Tokio task: local listener → channel to remote.
+//!
+//! NOTE: all methods are async — Tauri commands run inside the Tokio
+//! runtime, so `blocking_lock()` panics; always `.lock().await`.
 
 use std::sync::Arc;
 use thiserror::Error;
@@ -28,27 +31,27 @@ impl TunnelManager {
         Self { db }
     }
 
-    pub fn list(&self) -> Result<Vec<Tunnel>, TunnelError> {
-        let db = self.db.blocking_lock();
+    pub async fn list(&self) -> Result<Vec<Tunnel>, TunnelError> {
+        let db = self.db.lock().await;
         Ok(db.list_tunnels()?)
     }
 
     /// Persist a tunnel config (create/update).
-    pub fn save(&self, t: &Tunnel) -> Result<(), TunnelError> {
-        let db = self.db.blocking_lock();
+    pub async fn save(&self, t: &Tunnel) -> Result<(), TunnelError> {
+        let db = self.db.lock().await;
         db.upsert_tunnel(t)?;
         Ok(())
     }
 
-    pub fn remove(&self, id: &str) -> Result<(), TunnelError> {
-        let db = self.db.blocking_lock();
+    pub async fn remove(&self, id: &str) -> Result<(), TunnelError> {
+        let db = self.db.lock().await;
         db.delete_tunnel(id)?;
         Ok(())
     }
 
     /// Start forwarding. Phase 2: spawn russh direct-tcpip task per tunnel.
-    pub fn start(&self, id: &str) -> Result<(), TunnelError> {
-        let db = self.db.blocking_lock();
+    pub async fn start(&self, id: &str) -> Result<(), TunnelError> {
+        let db = self.db.lock().await;
         let mut tunnels = db.list_tunnels()?;
         let t = tunnels
             .iter_mut()
@@ -60,8 +63,8 @@ impl TunnelManager {
         Ok(())
     }
 
-    pub fn stop(&self, id: &str) -> Result<(), TunnelError> {
-        let db = self.db.blocking_lock();
+    pub async fn stop(&self, id: &str) -> Result<(), TunnelError> {
+        let db = self.db.lock().await;
         let mut tunnels = db.list_tunnels()?;
         let t = tunnels
             .iter_mut()

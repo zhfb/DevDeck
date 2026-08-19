@@ -2,9 +2,10 @@ import { useEffect, useMemo } from "react";
 import { Command } from "cmdk";
 import { Search, Terminal, Boxes, Monitor, Waypoints, Sun, Moon, LayoutDashboard, Server, Layers, Activity, Settings } from "lucide-react";
 import { useUi } from "@/stores/workspace";
-import { usePalette } from "@/stores/live";
+import { usePalette, useConnect } from "@/stores/live";
 import { useWorkspace } from "@/stores/workspace";
 import { useHosts, useContainers, useEngines } from "@/lib/queries";
+import type { Host } from "@/lib/types";
 import type { NavPanelId } from "./NavRail";
 
 const PANEL_ICONS: Record<string, React.ElementType> = {
@@ -21,6 +22,7 @@ const PANEL_ICONS: Record<string, React.ElementType> = {
 export function CommandPalette({ onOpenPanel }: { onOpenPanel: (p: NavPanelId) => void }) {
   const { commandPaletteOpen, setCommandPaletteOpen, toggleTheme } = useUi();
   const { openTab } = useWorkspace();
+  const openConnect = useConnect((s) => s.openConnect);
   const { actions } = usePalette();
   const { data: hosts } = useHosts();
   const { data: containers } = useContainers();
@@ -38,8 +40,8 @@ export function CommandPalette({ onOpenPanel }: { onOpenPanel: (p: NavPanelId) =
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const connectHost = (hostId: string, title: string) => {
-    openTab({ kind: "ssh", title, hostId, env: "dev" });
+  const connectHost = (host: Host) => {
+    openConnect({ hostId: host.id, hostName: host.name, address: host.address, user: host.user });
     setCommandPaletteOpen(false);
   };
 
@@ -51,7 +53,7 @@ export function CommandPalette({ onOpenPanel }: { onOpenPanel: (p: NavPanelId) =
         title: h.name,
         keywords: `${h.user}@${h.address} ssh`,
         icon: <Server className="h-3.5 w-3.5" />,
-        onSelect: () => connectHost(h.id, h.name),
+        onSelect: () => connectHost(h),
       })),
       ...(containers ?? []).map((c) => ({
         id: `container-${c.id}`,

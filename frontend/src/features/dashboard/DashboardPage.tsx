@@ -4,7 +4,7 @@ import type { PanelProps } from "@/features/registry";
 import { useContainers, useEngines, useHosts, useTunnels } from "@/lib/queries";
 import { isTauri, onEvent } from "@/lib/api";
 import type { DockerEventItem, Host } from "@/lib/types";
-import { usePalette } from "@/stores/live";
+import { usePalette, useConnect } from "@/stores/live";
 import { useWorkspace } from "@/stores/workspace";
 import { cn, timeAgo } from "@/lib/utils";
 import { EmptyState, EngineBadge, EnvTag } from "@/components/shared";
@@ -34,6 +34,7 @@ function actionClass(action: string): string {
  */
 export default function DashboardPage({ onOpenPanel }: PanelProps) {
   const { openTab, setBottomPanel } = useWorkspace();
+  const openConnect = useConnect((s) => s.openConnect);
   const registerAction = usePalette((s) => s.registerAction);
   const { data: engines } = useEngines();
   const { data: hosts } = useHosts();
@@ -69,7 +70,7 @@ export default function DashboardPage({ onOpenPanel }: PanelProps) {
   const activeTunnels = (tunnels ?? []).filter((t) => t.status === "active").length;
 
   const connectHost = (h: Host) => {
-    openTab({ kind: "ssh", title: h.name, hostId: h.id, env: h.env });
+    openConnect({ hostId: h.id, hostName: h.name, address: h.address, user: h.user });
   };
 
   const stats = [

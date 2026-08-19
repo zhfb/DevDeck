@@ -97,6 +97,8 @@ pub fn run() {
             ssh_connect,
             ssh_disconnect,
             ssh_sessions,
+            term_input,
+            term_resize,
         ])
         .run(tauri::generate_context!())
         .expect("error while running DevDeck");

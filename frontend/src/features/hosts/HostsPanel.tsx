@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
 import { useHostGroups, useHosts, useHostStats } from "@/lib/queries";
-import { useLive } from "@/stores/live";
+import { useLive, useConnect } from "@/stores/live";
 import { useWorkspace } from "@/stores/workspace";
 import { cn, formatPercent, timeAgo } from "@/lib/utils";
 import type { Env, Host } from "@/lib/types";
@@ -113,6 +113,7 @@ export default function HostsPanel(_props: PanelProps) {
   const { data: groups } = useHostGroups();
   const { hostOnline } = useLive();
   const { openTab } = useWorkspace();
+  const openConnect = useConnect((s) => s.openConnect);
 
   const [search, setSearch] = useState("");
   const [addOpen, setAddOpen] = useState(false);
@@ -129,7 +130,7 @@ export default function HostsPanel(_props: PanelProps) {
   );
 
   const connect = (host: Host) => {
-    openTab({ kind: "ssh", title: host.name, hostId: host.id, env: host.env });
+    openConnect({ hostId: host.id, hostName: host.name, address: host.address, user: host.user });
   };
 
   const openDetail = (host: Host) => {

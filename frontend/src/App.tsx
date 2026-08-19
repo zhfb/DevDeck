@@ -5,6 +5,7 @@ import { TabCanvas } from "./app/TabCanvas";
 import { BottomDock } from "./app/BottomDock";
 import { CommandPalette } from "./app/CommandPalette";
 import { ErrorBoundary } from "./components/error-boundary";
+import { ConnectionDialog } from "./components/ConnectionDialog";
 import { useWorkspace } from "./stores/workspace";
 
 const PANEL_TITLES: Record<NavPanelId, string> = {
@@ -45,6 +46,7 @@ export default function App() {
         </div>
         <BottomDock />
         <CommandPalette onOpenPanel={handleNavigate} />
+        <ConnectionDialog />
       </div>
     </ErrorBoundary>
   );

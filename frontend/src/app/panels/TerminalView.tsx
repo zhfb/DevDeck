@@ -3,7 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
-import { isTauri, onEvent } from "@/lib/api";
+import { isTauri, onEvent, invoke } from "@/lib/api";
 import type { SshSession } from "@/lib/types";
 
 interface TerminalViewProps {
@@ -84,13 +84,19 @@ export function TerminalView({ sessionId, hostId, title, env }: TerminalViewProp
       return;
     }
 
-    // Tauri mode: wire session data stream
+    // Tauri mode: wire real SSH session — Rust emits `term:data:<sid>`,
+    // input/resize go back via term_input / term_resize commands.
     let unsub: (() => void) | undefined;
     let disposed = false;
     if (isTauri && sessionId) {
-      onEvent<SshSession>(`term:data:${sessionId}`, () => {}).then((u) => (unsub = u));
+      onEvent<string>(`term:data:${sessionId}`, (text) => {
+        if (!disposed && term) term.write(text);
+      }).then((u) => (unsub = u));
       term.onData((d) => {
-        void invokeSend(`term:input:${sessionId}`, d);
+        void invoke("term_input", { sessionId, data: d }).catch(() => {});
+      });
+      term.onResize(({ cols, rows }) => {
+        void invoke("term_resize", { sessionId, cols, rows }).catch(() => {});
       });
     } else {
       // Mock demo shell
@@ -153,14 +159,4 @@ export function TerminalView({ sessionId, hostId, title, env }: TerminalViewProp
   }, [sessionId]);
 
   return <div ref={containerRef} className="xterm-pane h-full w-full" />;
-}
-
-// Lazy import to avoid pulling @tauri-apps/api/core twice
-async function invokeSend(cmd: string, data: string) {
-  const { invoke } = await import("@tauri-apps/api/core");
-  try {
-    await invoke(cmd, { data });
-  } catch {
-    /* session closed */
-  }
 }

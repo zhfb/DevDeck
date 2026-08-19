@@ -176,27 +176,27 @@ pub async fn networks_list(_state: State<'_, AppState>, _engine_id: Option<Strin
 // ---------------------------------------------------------------------------
 #[tauri::command]
 pub async fn tunnels_list(state: State<'_, AppState>) -> CmdResult<Vec<Tunnel>> {
-    state.tunnels.list().map_err(|e| e.to_string())
+    state.tunnels.list().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn tunnels_save(state: State<'_, AppState>, tunnel: Tunnel) -> CmdResult<()> {
-    state.tunnels.save(&tunnel).map_err(|e| e.to_string())
+    state.tunnels.save(&tunnel).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn tunnels_delete(state: State<'_, AppState>, id: String) -> CmdResult<()> {
-    state.tunnels.remove(&id).map_err(|e| e.to_string())
+    state.tunnels.remove(&id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn tunnels_start(state: State<'_, AppState>, id: String) -> CmdResult<()> {
-    state.tunnels.start(&id).map_err(|e| e.to_string())
+    state.tunnels.start(&id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn tunnels_stop(state: State<'_, AppState>, id: String) -> CmdResult<()> {
-    state.tunnels.stop(&id).map_err(|e| e.to_string())
+    state.tunnels.stop(&id).await.map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +207,8 @@ pub async fn ssh_connect(
     state: State<'_, AppState>,
     host_id: String,
     password: Option<String>,
+    cols: Option<u32>,
+    rows: Option<u32>,
 ) -> CmdResult<SshSession> {
     let db = state.db.lock().await;
     let host = db
@@ -215,13 +217,37 @@ pub async fn ssh_connect(
         .ok_or_else(|| format!("host not found: {host_id}"))?;
     drop(db);
 
-    let session = state.ssh.connect(&host, password.as_deref()).await.map_err(|e| e.to_string())?;
+    let session = state
+        .ssh
+        .connect_pty(&host, password.as_deref(), cols.unwrap_or(80), rows.unwrap_or(24))
+        .await
+        .map_err(|e| e.to_string())?;
 
     // record last-connect timestamp
     if let Ok(db) = state.db.try_lock() {
         let _ = db.touch_host(&host_id, &session.started_at);
     }
     Ok(session)
+}
+
+/// Forward raw terminal input into a PTY session.
+#[tauri::command]
+pub async fn term_input(state: State<'_, AppState>, session_id: String, data: String) -> CmdResult<()> {
+    state
+        .ssh
+        .send_data(&session_id, data.as_bytes())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Resize a PTY session (xterm fit → SSH window-change).
+#[tauri::command]
+pub async fn term_resize(state: State<'_, AppState>, session_id: String, cols: u32, rows: u32) -> CmdResult<()> {
+    state
+        .ssh
+        .resize(&session_id, cols, rows)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
