@@ -94,8 +94,15 @@ const qc = () => useQueryClient();
 export function useContainerAction() {
   const queryClient = qc();
   return useMutation({
-    mutationFn: ({ action, id }: { action: "start" | "stop" | "restart" | "pause" | "remove"; id: string }) =>
-      invoke(`containers.${action}`, { id }),
+    mutationFn: ({
+      action,
+      id,
+      engineId,
+    }: {
+      action: "start" | "stop" | "restart" | "pause" | "remove";
+      id: string;
+      engineId: string;
+    }) => invoke(`containers.${action}`, { engineId, id }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["containers"] }),
   });
 }

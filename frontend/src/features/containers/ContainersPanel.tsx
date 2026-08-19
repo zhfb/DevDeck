@@ -169,7 +169,7 @@ export default function ContainersPanel(_props: PanelProps) {
 
   const runAction = (c: Container, action: ActionVerb) => {
     containerAction.mutate(
-      { action, id: c.id },
+      { action, id: c.id, engineId: c.engineId },
       {
         onSuccess: () => toast.success(`已${ACTION_LABEL[action]} ${c.name}`),
         onError: (e) => toast.error(`${ACTION_LABEL[action]} ${c.name} 失败`, { description: String(e) }),
@@ -190,8 +190,9 @@ export default function ContainersPanel(_props: PanelProps) {
       setSelected(new Set());
     };
     ids.forEach((id) => {
+      const engineId = containers?.find((x) => x.id === id)?.engineId ?? "";
       containerAction.mutate(
-        { action, id },
+        { action, id, engineId },
         {
           onSuccess: () => {
             ok += 1;

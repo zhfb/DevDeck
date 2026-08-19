@@ -364,6 +364,12 @@ mockHandlers["tunnels.start"] = async ({ id }: { id: string }) => {
   }
   return { ok: true };
 };
+mockHandlers["images.remove"] = async ({ engineId, id }: { engineId: string; id: string }) => {
+  await sleep(600);
+  const i = mockImages.findIndex((x) => x.id === id && x.engineId === engineId);
+  if (i >= 0) mockImages.splice(i, 1);
+  return { ok: true };
+};
 mockHandlers["tunnels.stop"] = async ({ id }: { id: string }) => {
   await sleep(400);
   const t = mockTunnels.find((x) => x.id === id);

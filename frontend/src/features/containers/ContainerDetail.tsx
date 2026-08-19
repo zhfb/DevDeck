@@ -88,7 +88,7 @@ export default function ContainerDetail({
     if (!container) return;
     const label = { start: "启动", stop: "停止", restart: "重启", pause: "暂停", remove: "删除" }[action];
     containerAction.mutate(
-      { action, id: container.id },
+      { action, id: container.id, engineId: container.engineId },
       {
         onSuccess: () => toast.success(`已${label} ${container.name}`),
         onError: (e) => toast.error(`${label} ${container.name} 失败`, { description: String(e) }),

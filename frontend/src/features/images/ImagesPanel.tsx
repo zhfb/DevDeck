@@ -94,7 +94,7 @@ export default function ImagesPanel(_props: PanelProps) {
   };
 
   const deleteImage = (img: DockerImage) => {
-    invoke("images.delete", { id: img.id })
+    invoke("images.remove", { engineId: img.engineId, id: img.id })
       .then(() => {
         toast.success(`已删除镜像 ${img.repoTag}`);
         void queryClient.invalidateQueries({ queryKey: ["images"] });
