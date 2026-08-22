@@ -8,6 +8,9 @@ import type { SshSession } from "@/lib/types";
 interface TerminalViewProps {
   sessionId?: string;
   hostId?: string;
+  containerId?: string;
+  engineId?: string;
+  kind?: string;
   title: string;
   env?: string;
 }
@@ -17,7 +20,7 @@ interface TerminalViewProps {
  * (`term:data:<sessionId>` out, `term:input:<sessionId>` in). In browser mock
  * mode: renders a local demo shell so the UI is explorable.
  */
-export function TerminalView({ sessionId, hostId, title, env }: TerminalViewProps) {
+export function TerminalView({ sessionId, hostId, containerId, engineId, kind = "ssh", title, env }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
 
@@ -100,7 +103,7 @@ export function TerminalView({ sessionId, hostId, title, env }: TerminalViewProp
       return;
     }
 
-    // Tauri mode: wire real SSH session — Rust emits `term:data:<sid>`,
+    // Tauri mode: wire real SSH or Docker exec session — Rust emits `term:data:<sid>`,
     // input/resize go back via term_input / term_resize commands.
     let unsub: (() => void) | undefined;
     let unsubStatus: (() => void) | undefined;
@@ -116,11 +119,22 @@ export function TerminalView({ sessionId, hostId, title, env }: TerminalViewProp
         void invoke("term_resize", { sessionId, cols, rows }).catch(() => {});
       });
 
+      if (kind === "docker-exec") {
+        if (!engineId || !containerId) {
+          term.writeln("\r\n\x1b[31m--- 容器 exec 缺少引擎或容器信息 ---\x1b[0m");
+        } else {
+          void invoke("containers_exec", { engineId, containerId, sessionId }).catch((e) => {
+            if (!disposed && term) term.writeln(`\r\n\x1b[31m--- exec 启动失败：${String(e)} ---\x1b[0m`);
+          });
+        }
+      }
+
       // Auto-reconnect: on ssh:status disconnected (network drop detected by
       // keepalive), show a notice, then reconnect with the same session id.
       // If the network is still down, retry with exponential backoff
       // (3s → 6s → 12s → 30s cap) until it succeeds or the pane unmounts.
       onEvent<SshSession>("ssh:status", (s) => {
+        if (kind !== "ssh") return;
         if (disposed || !term || s.sessionId !== sessionId) return;
         if (s.status === "disconnected") {
           term.writeln("\r\n\x1b[33m--- 连接断开，3 秒后自动重连 ---\x1b[0m");

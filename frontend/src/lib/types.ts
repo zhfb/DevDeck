@@ -164,6 +164,14 @@ export interface SshSession {
   error?: string;
 }
 
+export interface SftpEntry {
+  name: string;
+  path: string;
+  kind: "file" | "directory" | "symlink" | "other" | string;
+  size: number;
+  modifiedAt?: string;
+}
+
 /** Terminal tab in the workspace */
 export interface TerminalTab {
   id: string;

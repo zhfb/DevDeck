@@ -5,7 +5,7 @@ use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use thiserror::Error;
 
-use crate::models::{Host, HostGroup, Tunnel};
+use crate::models::{Host, HostGroup, KnownHostRecord, Tunnel};
 
 #[derive(Error, Debug)]
 pub enum DbError {
@@ -45,6 +45,20 @@ impl AppDb {
     }
 
     fn migrate(&self) -> Result<(), DbError> {
+        // known_hosts TOFU (G3): rebuilt 2026-08. The Phase-1 schema
+        // (host_key PK, never written — TOFU was a TODO that accepted all
+        // keys) is dropped when detected so the new (host, port, key_type)
+        // schema can be created. Once migrated this check is a no-op, so
+        // accumulated TOFU records survive subsequent app restarts.
+        let legacy: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'known_hosts' AND sql LIKE '%host_key%'",
+            [],
+            |r| r.get(0),
+        )?;
+        if legacy > 0 {
+            self.conn.execute("DROP TABLE known_hosts", [])?;
+        }
+
         self.conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS host_groups (
@@ -79,10 +93,14 @@ impl AppDb {
                 status TEXT NOT NULL DEFAULT 'stopped'
             );
             CREATE TABLE IF NOT EXISTS known_hosts (
-                host_key TEXT PRIMARY KEY,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                key_type TEXT NOT NULL,
                 fingerprint TEXT NOT NULL,
+                public_key TEXT NOT NULL,
                 first_seen TEXT NOT NULL,
-                last_seen TEXT NOT NULL
+                last_seen TEXT NOT NULL,
+                PRIMARY KEY(host, port, key_type)
             );
             "#,
         )?;
@@ -248,6 +266,69 @@ impl AppDb {
 
     pub fn delete_tunnel(&self, id: &str) -> Result<(), DbError> {
         self.conn.execute("DELETE FROM tunnels WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    // ---- known hosts (TOFU) ----
+    pub fn get_known_host(
+        &self,
+        host: &str,
+        port: u16,
+        key_type: &str,
+    ) -> Result<Option<KnownHostRecord>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT host, port, key_type, fingerprint, public_key, first_seen, last_seen
+             FROM known_hosts WHERE host = ?1 AND port = ?2 AND key_type = ?3",
+        )?;
+        let mut rows = stmt.query_map(params![host, port, key_type], |r| {
+            Ok(KnownHostRecord {
+                host: r.get(0)?,
+                port: r.get(1)?,
+                key_type: r.get(2)?,
+                fingerprint: r.get(3)?,
+                public_key: r.get(4)?,
+                first_seen: r.get(5)?,
+                last_seen: r.get(6)?,
+            })
+        })?;
+        Ok(rows.next().transpose()?)
+    }
+
+    pub fn upsert_known_host(&self, rec: &KnownHostRecord) -> Result<(), DbError> {
+        self.conn.execute(
+            "INSERT INTO known_hosts (host, port, key_type, fingerprint, public_key, first_seen, last_seen)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(host, port, key_type) DO UPDATE SET
+               fingerprint=excluded.fingerprint, public_key=excluded.public_key,
+               last_seen=excluded.last_seen",
+            params![
+                rec.host, rec.port, rec.key_type, rec.fingerprint, rec.public_key,
+                rec.first_seen, rec.last_seen
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Delete every stored key (all key types) for a host; returns the
+    /// number of deleted records.
+    pub fn delete_known_host(&self, host: &str, port: u16) -> Result<usize, DbError> {
+        let n = self
+            .conn
+            .execute("DELETE FROM known_hosts WHERE host = ?1 AND port = ?2", params![host, port])?;
+        Ok(n)
+    }
+
+    pub fn touch_known_host_last_seen(
+        &self,
+        host: &str,
+        port: u16,
+        key_type: &str,
+        ts: &str,
+    ) -> Result<(), DbError> {
+        self.conn.execute(
+            "UPDATE known_hosts SET last_seen = ?1 WHERE host = ?2 AND port = ?3 AND key_type = ?4",
+            params![ts, host, port, key_type],
+        )?;
         Ok(())
     }
 }

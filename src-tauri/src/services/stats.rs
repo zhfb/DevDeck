@@ -19,6 +19,7 @@ pub struct StatsCache {
     history: HashMap<String, Vec<HostStatsHistoryPoint>>,
 }
 
+#[derive(Clone)]
 pub struct StatsCollector {
     cache: Arc<Mutex<StatsCache>>,
     app: AppHandle,

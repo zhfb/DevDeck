@@ -46,11 +46,15 @@ DevDeck/
 - [x] DESIGN.md 设计系统（token 规范，design-md lint 通过）
 - [x] 前端骨架：布局框架（导航栏/资源树/Tab 画布/底部面板/Cmd+K）+ 组件库 + API 双模层
 - [x] 管理面板：容器 / 镜像 / 主机 / 监控 / 隧道 / Dashboard / 设置 / 详情页（mock 数据可完整演示）
-- [x] Rust 核心层：Docker 引擎探测 + 容器/镜像操作（bollard）、SSH 会话（russh）、SQLite、Keychain 骨架
-- [ ] Phase 1: SSH 终端 PTY 事件桥接 + known_hosts TOFU + Keychain 接入命令
-- [ ] Phase 2: SFTP 双栏 + 远程 Docker over SSH + 容器 exec 终端
-- [ ] Phase 3: 隧道真实转发 + 无 Agent 监控轮询 + 节能引擎 + 测试加固
-- [ ] Phase 4: 托盘 + 打包公证 + MVP 发布
+- [x] Rust 核心层：Docker 引擎探测 + 容器/镜像操作（bollard）、SSH 会话（russh）、SQLite、Keychain
+- [x] SSH PTY 事件桥接、known_hosts TOFU、keepalive、自动重连
+- [x] Docker events 自愈转发、snapshot 补偿、镜像拉取任务进度
+- [x] 低功耗状态模型：Active / Background / Idle + 前端自适应刷新策略
+- [x] Phase 2: SFTP 双栏、目录操作、传输队列、进度和断点 offset
+- [x] 本地容器 exec attach 和实时日志流基础链路
+- [ ] Phase 3: 隧道真实转发 + 无 Agent 监控后台采样
+- [ ] Phase 4: 低功耗后端调度、能耗基线、测试加固
+- [ ] Phase 5: 托盘 + 打包公证 + MVP 发布
 
 ## 开发方式
 

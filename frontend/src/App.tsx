@@ -4,17 +4,22 @@ import { ResourceTree } from "./app/ResourceTree";
 import { TabCanvas } from "./app/TabCanvas";
 import { BottomDock } from "./app/BottomDock";
 import { CommandPalette } from "./app/CommandPalette";
+import TrayEvents from "./app/TrayEvents";
 import { ErrorBoundary } from "./components/error-boundary";
 import { ConnectionDialog } from "./components/ConnectionDialog";
+import { HostKeyDialog } from "./components/HostKeyDialog";
 import { useWorkspace } from "./stores/workspace";
+import { PowerController } from "./stores/power";
 
 const PANEL_TITLES: Record<NavPanelId, string> = {
   dashboard: "总览",
   hosts: "SSH 主机",
+  sftp: "SFTP",
   containers: "容器",
   images: "镜像",
   tunnels: "隧道",
   monitor: "监控",
+  tasks: "任务",
   settings: "设置",
 };
 
@@ -39,6 +44,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <div className="flex h-full flex-col bg-background text-foreground">
+        <PowerController />
         <NavRail current={currentPanel} onNavigate={handleNavigate} />
         <div className="flex min-h-0 flex-1">
           <ResourceTree currentPanel={currentPanel} onOpenPanel={handleNavigate} />
@@ -47,6 +53,8 @@ export default function App() {
         <BottomDock />
         <CommandPalette onOpenPanel={handleNavigate} />
         <ConnectionDialog />
+        <HostKeyDialog />
+        <TrayEvents />
       </div>
     </ErrorBoundary>
   );

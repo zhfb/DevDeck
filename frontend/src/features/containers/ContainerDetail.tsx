@@ -11,6 +11,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
+import { invoke, isTauri, onEvent } from "@/lib/api";
 import { useContainer, useContainerAction, useEngines } from "@/lib/queries";
 import {
   cn,
@@ -77,6 +78,7 @@ export default function ContainerDetail({
   const containerAction = useContainerAction();
   const { openTab } = useWorkspace();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [liveLogs, setLiveLogs] = useState<string[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
 
   const engine = useMemo(
@@ -98,8 +100,28 @@ export default function ContainerDetail({
 
   const openShell = () => {
     if (!container) return;
-    openTab({ kind: "ssh", title: `${container.name} Shell`, containerId: container.id, engineId: container.engineId, env: "none" });
+    openTab({
+      kind: "docker-exec",
+      title: `${container.name} Shell`,
+      sessionId: `exec-${container.id}-${Date.now().toString(36)}`,
+      containerId: container.id,
+      engineId: container.engineId,
+      env: "none",
+    });
   };
+
+  useEffect(() => {
+    if (!container || !isTauri) return;
+    let cleanup: (() => void) | undefined;
+    void onEvent<{ containerId: string; line: string }>("docker:logs", (event) => {
+      if (event.containerId !== container.id) return;
+      setLiveLogs((lines) => [...lines, event.line].slice(-500));
+    }).then((unlisten) => { cleanup = unlisten; });
+    void invoke("containers_logs", { engineId: container.engineId, containerId: container.id }).catch((e) => {
+      setLiveLogs([`[DevDeck] 日志连接失败：${String(e)}`]);
+    });
+    return () => cleanup?.();
+  }, [container?.id, container?.engineId]);
 
   // Simulated streaming log — auto scroll to bottom on mount
   useEffect(() => {
@@ -288,14 +310,16 @@ export default function ContainerDetail({
               ref={logRef}
               className="select-text-all h-[420px] overflow-auto rounded-lg border border-border bg-[#0b0d0f] p-3 font-mono text-[12px] leading-relaxed"
             >
-              {mockLogLines(container).map((l, i) => (
-                <div key={i} className={cn("whitespace-pre-wrap", l.stream === "stderr" ? "text-danger" : l.stream === "system" ? "text-muted" : "text-[#e8eaed]")}>
-                  <span className="mr-2 text-[#7c838d]">{l.time}</span>
-                  {l.text}
-                </div>
-              ))}
+              {liveLogs.length > 0
+                ? liveLogs.map((line, i) => <div key={i} className="whitespace-pre-wrap text-[#e8eaed]">{line}</div>)
+                : mockLogLines(container).map((l, i) => (
+                    <div key={i} className={cn("whitespace-pre-wrap", l.stream === "stderr" ? "text-danger" : l.stream === "system" ? "text-muted" : "text-[#e8eaed]")}>
+                      <span className="mr-2 text-[#7c838d]">{l.time}</span>
+                      {l.text}
+                    </div>
+                  ))}
             </div>
-            <p className="mt-2 text-[12px] text-muted">模拟日志流（Tauri 模式下为容器实时 stdout/stderr）</p>
+            <p className="mt-2 text-[12px] text-muted">{liveLogs.length > 0 ? "容器实时 stdout/stderr" : "浏览器预览使用模拟日志流"}</p>
           </TabsContent>
 
           {/* Terminal */}

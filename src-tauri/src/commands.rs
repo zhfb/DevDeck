@@ -2,19 +2,26 @@
 //! Keep command names + argument/return shapes in sync with the frontend.
 
 use std::sync::Arc;
-use tauri::State;
+use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 
 use crate::infra::db::AppDb;
 use crate::models::*;
-use crate::services::{docker::DockerManager, ssh::SshManager, stats::StatsCollector, tunnel::TunnelManager};
+use crate::services::{
+    docker::DockerManager, hostkey::HostKeyResolver, ssh::SshManager, stats::StatsCollector,
+    power::{PowerManager, PowerState}, sftp::{SftpManager, TransferDirection}, tunnel::TunnelManager,
+};
 
 pub struct AppState {
     pub db: Arc<Mutex<AppDb>>,
     pub docker: Arc<DockerManager>,
     pub ssh: Arc<SshManager>,
     pub stats: StatsCollector,
+    pub power: PowerManager,
+    pub sftp: Arc<SftpManager>,
     pub tunnels: Arc<TunnelManager>,
+    /// known_hosts TOFU — resolves pending `ssh:host-key-verify` prompts
+    pub hostkey: Arc<HostKeyResolver>,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -29,6 +36,120 @@ pub async fn app_info() -> CmdResult<AppInfo> {
         backend: "tauri-rust".to_string(),
         platform: std::env::consts::OS.to_string(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// power / adaptive load
+// ---------------------------------------------------------------------------
+#[tauri::command]
+pub async fn power_state_get(state: State<'_, AppState>) -> CmdResult<crate::services::power::PowerSnapshot> {
+    Ok(state.power.snapshot().await)
+}
+
+#[tauri::command]
+pub async fn power_state_set(
+    state: State<'_, AppState>,
+    power_state: PowerState,
+) -> CmdResult<crate::services::power::PowerSnapshot> {
+    Ok(state.power.set_state(power_state).await)
+}
+
+// ---------------------------------------------------------------------------
+// sftp
+// ---------------------------------------------------------------------------
+#[tauri::command]
+pub async fn sftp_list(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> CmdResult<Vec<crate::models::SftpEntry>> {
+    state
+        .sftp
+        .list(&session_id, &crate::services::sftp::normalize_remote_path(&path))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn sftp_mkdir(state: State<'_, AppState>, session_id: String, path: String) -> CmdResult<()> {
+    state.sftp.mkdir(&session_id, &path).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn sftp_remove(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+    directory: bool,
+) -> CmdResult<()> {
+    state.sftp.remove(&session_id, &path, directory).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn sftp_rename(
+    state: State<'_, AppState>,
+    session_id: String,
+    old_path: String,
+    new_path: String,
+) -> CmdResult<()> {
+    state.sftp.rename(&session_id, &old_path, &new_path).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn sftp_transfer(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    local_path: String,
+    remote_path: String,
+    direction: String,
+    resume: Option<bool>,
+) -> CmdResult<String> {
+    let direction = match direction.as_str() {
+        "upload" => TransferDirection::Upload,
+        "download" => TransferDirection::Download,
+        other => return Err(format!("unsupported sftp direction: {other}")),
+    };
+    let task_id = format!("sftp-{}", uuid::Uuid::new_v4().simple());
+    let manager = state.sftp.clone();
+    let task_id_job = task_id.clone();
+    tauri::async_runtime::spawn(async move {
+        use tauri::Emitter;
+        let result = manager
+            .transfer(&app, &task_id_job, &session_id, &local_path, &remote_path, direction, resume.unwrap_or(true))
+            .await;
+        if let Err(error) = result {
+            let _ = app.emit("sftp:progress", serde_json::json!({
+                "taskId": task_id_job,
+                "direction": direction.as_str(),
+                "percent": 0,
+                "state": "error",
+                "error": error.to_string(),
+            }));
+        }
+    });
+    Ok(task_id)
+}
+
+#[tauri::command]
+pub async fn local_fs_list(path: Option<String>) -> CmdResult<Vec<crate::models::SftpEntry>> {
+    let path = path.unwrap_or_else(|| ".".to_string());
+    let dir = std::path::PathBuf::from(&path);
+    let mut entries = tokio::fs::read_dir(&dir).await.map_err(|e| e.to_string())?;
+    let mut result = Vec::new();
+    while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+        let metadata = entry.metadata().await.map_err(|e| e.to_string())?;
+        let kind = if metadata.is_dir() { "directory" } else if metadata.is_file() { "file" } else { "other" };
+        result.push(crate::models::SftpEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            path: entry.path().to_string_lossy().to_string(),
+            kind: kind.to_string(),
+            size: metadata.len(),
+            modified_at: metadata.modified().ok().map(|time| chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()),
+        });
+    }
+    result.sort_by_key(|entry| (!matches!(entry.kind.as_str(), "directory"), entry.name.to_lowercase()));
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +179,11 @@ pub async fn hosts_groups(state: State<'_, AppState>) -> CmdResult<Vec<HostGroup
 
 #[tauri::command]
 pub async fn hosts_stats(state: State<'_, AppState>, host_id: String) -> CmdResult<Option<HostStats>> {
+    if let Ok(output) = state.ssh.exec_for_host(&host_id, crate::services::stats::STATS_BATCH_CMD).await {
+        if let Some(stats) = state.stats.parse_batch(&host_id, &output) {
+            state.stats.record(stats).await;
+        }
+    }
     Ok(state.stats.latest(&host_id).await)
 }
 
@@ -147,6 +273,27 @@ pub async fn containers_remove(state: State<'_, AppState>, engine_id: String, id
     state.docker.remove(&engine_id, &id).await.map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn containers_exec(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    engine_id: String,
+    container_id: String,
+    session_id: String,
+) -> CmdResult<()> {
+    state.docker.exec_start(&app, &engine_id, &container_id, &session_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn containers_logs(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    engine_id: String,
+    container_id: String,
+) -> CmdResult<()> {
+    state.docker.logs_stream(&app, &engine_id, &container_id).await.map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // images
 // ---------------------------------------------------------------------------
@@ -160,8 +307,54 @@ pub async fn images_list(state: State<'_, AppState>, engine_id: Option<String>) 
 }
 
 #[tauri::command]
-pub async fn images_pull(state: State<'_, AppState>, engine_id: String, image: String) -> CmdResult<()> {
-    state.docker.pull_image(&engine_id, &image).await.map_err(|e| e.to_string())
+pub async fn images_pull(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    engine_id: Option<String>,
+    image: String,
+) -> CmdResult<String> {
+    let engine_id = match engine_id {
+        Some(id) => id,
+        None => state
+            .docker
+            .list_engines()
+            .await
+            .into_iter()
+            .find(|engine| engine.reachable)
+            .map(|engine| engine.id)
+            .ok_or_else(|| "没有可用的 Docker 引擎".to_string())?,
+    };
+    let task_id = format!("pull-{}", uuid::Uuid::new_v4().simple());
+    let docker = state.docker.clone();
+    let task_id_for_job = task_id.clone();
+    let image_for_job = image.clone();
+    let app_for_job = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = docker
+            .pull_image(&engine_id, &image_for_job, &app_for_job, &task_id_for_job)
+            .await;
+        use tauri::Emitter;
+        let payload = match result {
+            Ok(()) => serde_json::json!({
+                "taskId": task_id_for_job,
+                "image": image_for_job,
+                "engineId": engine_id,
+                "percent": 100,
+                "status": "完成",
+                "state": "done",
+            }),
+            Err(error) => serde_json::json!({
+                "taskId": task_id_for_job,
+                "image": image_for_job,
+                "engineId": engine_id,
+                "percent": 0,
+                "status": error.to_string(),
+                "state": "error",
+            }),
+        };
+        let _ = app_for_job.emit("docker:pull-progress", payload);
+    });
+    Ok(task_id)
 }
 
 #[tauri::command]
@@ -251,21 +444,19 @@ pub async fn ssh_connect(
 /// Forward raw terminal input into a PTY session.
 #[tauri::command]
 pub async fn term_input(state: State<'_, AppState>, session_id: String, data: String) -> CmdResult<()> {
-    state
-        .ssh
-        .send_data(&session_id, data.as_bytes())
-        .await
-        .map_err(|e| e.to_string())
+    match state.ssh.send_data(&session_id, data.as_bytes()).await {
+        Ok(()) => Ok(()),
+        Err(_) => state.docker.exec_input(&session_id, data.as_bytes()).await.map_err(|e| e.to_string()),
+    }
 }
 
 /// Resize a PTY session (xterm fit → SSH window-change).
 #[tauri::command]
 pub async fn term_resize(state: State<'_, AppState>, session_id: String, cols: u32, rows: u32) -> CmdResult<()> {
-    state
-        .ssh
-        .resize(&session_id, cols, rows)
-        .await
-        .map_err(|e| e.to_string())
+    match state.ssh.resize(&session_id, cols, rows).await {
+        Ok(()) => Ok(()),
+        Err(_) => state.docker.exec_resize(&session_id, cols as u16, rows as u16).await.map_err(|e| e.to_string()),
+    }
 }
 
 /// Reconnect a dropped PTY session (auto-reconnect after keepalive detects

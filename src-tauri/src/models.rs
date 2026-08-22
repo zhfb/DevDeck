@@ -219,6 +219,34 @@ pub struct SshSession {
 }
 
 // ---------------------------------------------------------------------------
+// SFTP
+// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpEntry {
+    pub name: String,
+    pub path: String,
+    pub kind: String, // file | directory | symlink | other
+    pub size: u64,
+    pub modified_at: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Known hosts (TOFU)
+// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownHostRecord {
+    pub host: String,
+    pub port: u16,
+    pub key_type: String,
+    pub fingerprint: String,
+    pub public_key: String,
+    pub first_seen: String,
+    pub last_seen: String,
+}
+
+// ---------------------------------------------------------------------------
 // App info
 // ---------------------------------------------------------------------------
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

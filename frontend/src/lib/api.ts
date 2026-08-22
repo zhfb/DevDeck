@@ -322,6 +322,27 @@ export const mockHandlers: Record<string, (a: any) => unknown> = {
   "tunnels.get": async ({ id }: { id: string }) => mockTunnels.find((t) => t.id === id) ?? null,
   "ssh.sessions": async () => [] as SshSession[],
   "app.info": async () => ({ version: "0.1.0", backend: "mock", platform: navigator.platform }),
+  "power_state_get": async () => ({
+    state: "active",
+    policy: { statsIntervalSecs: 5, renderEvents: true, keepConnections: true },
+  }),
+  "power_state_set": async ({ powerState }: { powerState: string }) => ({
+    state: powerState,
+    policy: {
+      statsIntervalSecs: powerState === "active" ? 5 : powerState === "background" ? 30 : null,
+      renderEvents: powerState === "active",
+      keepConnections: true,
+    },
+  }),
+  "local_fs_list": async ({ path }: { path?: string }) => [
+    { name: "src", path: `${path ?? "."}/src`, kind: "directory", size: 0 },
+    { name: "README.md", path: `${path ?? "."}/README.md`, kind: "file", size: 3570 },
+  ],
+  "sftp_list": async ({ path }: { path: string }) => [
+    { name: "etc", path: `${path === "/" ? "" : path}/etc`, kind: "directory", size: 0 },
+    { name: "var", path: `${path === "/" ? "" : path}/var`, kind: "directory", size: 0 },
+    { name: "deploy.txt", path: `${path === "/" ? "" : path}/deploy.txt`, kind: "file", size: 18_432 },
+  ],
 };
 
 // SSH mock handlers (object literal continues separately — see above)
@@ -332,8 +353,33 @@ mockHandlers["ssh_connect"] = async (a: { hostId: string }) => ({
   status: "connected",
   startedAt: new Date().toISOString(),
 });
+mockHandlers["ssh_reconnect"] = async (a: { sessionId: string; hostId: string }) => ({
+  sessionId: a.sessionId,
+  hostId: a.hostId,
+  title: "demo",
+  status: "connected",
+  startedAt: new Date().toISOString(),
+});
 mockHandlers["term_input"] = async () => ({ ok: true });
 mockHandlers["term_resize"] = async () => ({ ok: true });
+mockHandlers["sftp_transfer"] = async ({ direction, localPath, remotePath }: { direction: "upload" | "download"; localPath: string; remotePath: string }) => {
+  const taskId = `sftp-mock-${Date.now().toString(36)}`;
+  void (async () => {
+    for (const percent of [10, 35, 70, 100]) {
+      await sleep(250);
+      mockEvents.emit("sftp:progress", {
+        taskId,
+        direction,
+        completedBytes: percent * 1000,
+        totalBytes: 100_000,
+        percent,
+        state: percent === 100 ? "done" : "running",
+        detail: `${localPath} → ${remotePath}`,
+      });
+    }
+  })();
+  return taskId;
+};
 
 // Mutation handlers — simulate latency + state change, keep UI responsive
 mockHandlers["containers.start"] = async ({ id }: { id: string }) => {
@@ -402,6 +448,10 @@ mockHandlers["tunnels.stop"] = async ({ id }: { id: string }) => {
   return { ok: true };
 };
 
+// Host key TOFU (G3) — mock accepts decisions / forgets silently
+mockHandlers["ssh_host_key_decide"] = async () => ({ ok: true });
+mockHandlers["ssh_known_hosts_forget"] = async () => 0;
+
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -419,6 +469,37 @@ const mockEvents = {
   emit(event: string, payload: unknown) {
     this.listeners.get(event)?.forEach((cb) => cb(payload));
   },
+};
+
+// Image pull mock — mirrors the Rust event contract so the task queue remains
+// explorable in browser mode.
+mockHandlers["images.pull"] = async ({ image }: { image: string }) => {
+  const taskId = `pull-mock-${Date.now().toString(36)}`;
+  void (async () => {
+    for (const [percent, status] of [
+      [5, "开始拉取"],
+      [35, "Downloading"],
+      [75, "Extracting"],
+    ] as const) {
+      await sleep(350);
+      mockEvents.emit("docker:pull-progress", {
+        taskId,
+        image,
+        percent,
+        status,
+        detail: "mock-layer",
+      });
+    }
+    await sleep(350);
+    mockEvents.emit("docker:pull-progress", {
+      taskId,
+      image,
+      percent: 100,
+      status: "完成",
+      state: "done",
+    });
+  })();
+  return taskId;
 };
 
 let statsTimer: ReturnType<typeof setInterval> | null = null;

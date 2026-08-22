@@ -4,14 +4,19 @@ pub mod commands;
 pub mod infra;
 pub mod models;
 pub mod services;
+pub mod tray;
 
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tokio::sync::Mutex;
 
 use commands::{AppState, *};
 use infra::db::AppDb;
-use services::{docker::DockerManager, ssh::SshManager, stats::StatsCollector, tunnel::TunnelManager};
+use services::{
+    docker::DockerManager, hostkey::HostKeyResolver, hostkey::{ssh_host_key_decide, ssh_known_hosts_forget},
+    power::PowerManager, ssh::SshManager, stats::StatsCollector, tunnel::TunnelManager,
+    sftp::SftpManager,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -56,9 +61,38 @@ pub fn run() {
 
             // services
             let docker = Arc::new(DockerManager::new());
-            let ssh = Arc::new(SshManager::new(app_handle.clone()));
+            // known_hosts TOFU resolver — shared between SshManager (host key
+            // verification during the handshake) and AppState (so the
+            // `ssh_host_key_decide` command can resolve pending prompts).
+            let hostkey = Arc::new(HostKeyResolver::new(app_handle.clone()));
+            let ssh = Arc::new(SshManager::new(app_handle.clone(), (*hostkey).clone()));
             let stats = StatsCollector::new(app_handle.clone());
-            let tunnels = Arc::new(TunnelManager::new(db.clone()));
+            let power = PowerManager::new();
+            let tunnels = Arc::new(TunnelManager::new(db.clone(), ssh.clone()));
+            let sftp = Arc::new(SftpManager::new(ssh.clone()));
+
+            // Adaptive no-agent monitoring: SSH keepalive and active tunnels
+            // remain independent; only optional stats sampling is throttled.
+            let stats_bg = stats.clone();
+            let ssh_bg = ssh.clone();
+            let power_bg = power.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let policy = power_bg.snapshot().await.policy;
+                    if let Some(interval) = policy.stats_interval_secs {
+                        for host_id in ssh_bg.active_host_ids().await {
+                            if let Ok(output) = ssh_bg.exec_for_host(&host_id, services::stats::STATS_BATCH_CMD).await {
+                                if let Some(sample) = stats_bg.parse_batch(&host_id, &output) {
+                                    stats_bg.record(sample).await;
+                                }
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+                    } else {
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    }
+                }
+            });
 
             // background tasks
             let docker_bg = docker.clone();
@@ -68,14 +102,9 @@ pub fn run() {
                 if let Err(e) = docker_bg.probe().await {
                     tracing::warn!("docker probe failed: {e}");
                 }
-                // forward docker events → frontend
-                if let Ok(stream) = docker_bg.event_stream("local-orbstack").await {
-                    use futures_util::StreamExt;
-                    let mut stream = Box::pin(stream);
-                    while let Some(ev) = stream.next().await {
-                        let _ = app_bg.emit("docker:events", serde_json::json!({ "events": [ev] }));
-                    }
-                }
+                // forward docker events → frontend (self-healing: reconnect +
+                // snapshot compensation on every successful re-connect)
+                let _ = docker_bg.run_event_forwarding(app_bg, "local-orbstack").await;
             });
 
             app.manage(AppState {
@@ -83,13 +112,29 @@ pub fn run() {
                 docker,
                 ssh,
                 stats,
+                power,
+                sftp,
                 tunnels,
+                hostkey,
             });
+
+            // macOS 系统托盘（menu bar）—— P0
+            if let Err(e) = tray::init_tray(&app_handle) {
+                tracing::warn!("tray init failed: {e}");
+            }
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            power_state_get,
+            power_state_set,
+            sftp_list,
+            sftp_mkdir,
+            sftp_remove,
+            sftp_rename,
+            sftp_transfer,
+            local_fs_list,
             engines_list,
             hosts_list,
             hosts_groups,
@@ -105,6 +150,8 @@ pub fn run() {
             containers_pause,
             containers_unpause,
             containers_remove,
+            containers_exec,
+            containers_logs,
             images_list,
             images_pull,
             images_remove,
@@ -116,8 +163,11 @@ pub fn run() {
             tunnels_start,
             tunnels_stop,
             ssh_connect,
+            ssh_reconnect,
             ssh_disconnect,
             ssh_sessions,
+            ssh_host_key_decide,
+            ssh_known_hosts_forget,
             term_input,
             term_resize,
         ])

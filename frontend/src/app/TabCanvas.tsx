@@ -168,7 +168,15 @@ function TerminalTabContent({ tab }: { tab: WorkspaceTab }) {
                 : undefined
             }
           >
-            <TerminalView sessionId={p.sessionId} hostId={tab.hostId} title={p.title} env={tab.env} />
+            <TerminalView
+              sessionId={p.sessionId}
+              hostId={tab.hostId}
+              containerId={tab.containerId}
+              engineId={tab.engineId}
+              kind={tab.kind}
+              title={p.title}
+              env={tab.env}
+            />
             {/* active-pane outline */}
             <div
               className={cn(

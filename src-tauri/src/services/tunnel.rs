@@ -13,6 +13,9 @@ use tokio::sync::Mutex;
 
 use crate::infra::db::AppDb;
 use crate::models::Tunnel;
+use crate::services::ssh::SshManager;
+use tokio::task::JoinHandle;
+use tokio::net::TcpListener;
 
 #[derive(Error, Debug)]
 pub enum TunnelError {
@@ -20,15 +23,19 @@ pub enum TunnelError {
     NotFound(String),
     #[error("db error: {0}")]
     Db(#[from] crate::infra::db::DbError),
+    #[error("forwarding error: {0}")]
+    Forward(String),
 }
 
 pub struct TunnelManager {
     db: Arc<Mutex<AppDb>>,
+    ssh: Arc<SshManager>,
+    tasks: Arc<Mutex<std::collections::HashMap<String, JoinHandle<()>>>>,
 }
 
 impl TunnelManager {
-    pub fn new(db: Arc<Mutex<AppDb>>) -> Self {
-        Self { db }
+    pub fn new(db: Arc<Mutex<AppDb>>, ssh: Arc<SshManager>) -> Self {
+        Self { db, ssh, tasks: Arc::new(Mutex::new(std::collections::HashMap::new())) }
     }
 
     pub async fn list(&self) -> Result<Vec<Tunnel>, TunnelError> {
@@ -44,26 +51,67 @@ impl TunnelManager {
     }
 
     pub async fn remove(&self, id: &str) -> Result<(), TunnelError> {
+        if let Some(handle) = self.tasks.lock().await.remove(id) {
+            handle.abort();
+        }
         let db = self.db.lock().await;
         db.delete_tunnel(id)?;
         Ok(())
     }
 
-    /// Start forwarding. Phase 2: spawn russh direct-tcpip task per tunnel.
     pub async fn start(&self, id: &str) -> Result<(), TunnelError> {
+        let tunnel = {
+            let db = self.db.lock().await;
+            db.list_tunnels()?.into_iter()
+            .find(|t| t.id == id)
+            .ok_or_else(|| TunnelError::NotFound(id.to_string()))?
+        };
+        if tunnel.type_ != "local" {
+            return Err(TunnelError::Forward("当前版本先支持 Local Forwarding；Remote Forwarding 尚未接入".to_string()));
+        }
+        let listener = TcpListener::bind(format!("{}:{}", tunnel.listen_addr, tunnel.listen_port))
+            .await
+            .map_err(|e| TunnelError::Forward(e.to_string()))?;
+        let ssh = self.ssh.clone();
+        let db = self.db.clone();
+        let task_id = tunnel.id.clone();
+        let host_id = tunnel.host_id.clone();
+        let remote_host = tunnel.remote_host.clone();
+        let remote_port = tunnel.remote_port;
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else { break };
+                let ssh = ssh.clone();
+                let host_id = host_id.clone();
+                let remote_host = remote_host.clone();
+                tokio::spawn(async move {
+                    let _ = ssh.proxy_local_connection(&host_id, stream, &remote_host, remote_port).await;
+                });
+            }
+            if let Ok(db) = db.try_lock() {
+                if let Ok(mut tunnels) = db.list_tunnels() {
+                    if let Some(t) = tunnels.iter_mut().find(|t| t.id == task_id) {
+                        t.status = "stopped".to_string();
+                        let _ = db.upsert_tunnel(t);
+                    }
+                }
+            }
+        });
+        self.tasks.lock().await.insert(tunnel.id.clone(), handle);
         let db = self.db.lock().await;
         let mut tunnels = db.list_tunnels()?;
-        let t = tunnels
-            .iter_mut()
-            .find(|t| t.id == id)
-            .ok_or_else(|| TunnelError::NotFound(id.to_string()))?;
-        t.status = "active".to_string();
-        t.started_at = Some(crate::models::now_iso());
-        db.upsert_tunnel(t)?;
+        if let Some(t) = tunnels.iter_mut().find(|t| t.id == id) {
+            t.status = "active".to_string();
+            t.started_at = Some(crate::models::now_iso());
+            db.upsert_tunnel(t)?;
+        }
         Ok(())
     }
 
     pub async fn stop(&self, id: &str) -> Result<(), TunnelError> {
+        if let Some(handle) = self.tasks.lock().await.remove(id) {
+            handle.abort();
+        }
         let db = self.db.lock().await;
         let mut tunnels = db.list_tunnels()?;
         let t = tunnels

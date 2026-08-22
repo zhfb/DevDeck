@@ -1,5 +1,8 @@
+import { useEffect } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
-import { invoke } from "@/lib/api";
+import { invoke, onEvent } from "@/lib/api";
+import { useTaskStore } from "@/features/tasks/taskStore";
+import { powerInterval, usePower } from "@/stores/power";
 import type {
   Container,
   DockerEngine,
@@ -15,10 +18,12 @@ import type {
 // Queries (low-frequency, TanStack Query)
 // ---------------------------------------------------------------------------
 export function useEngines() {
+  const mode = usePower((s) => s.mode);
   return useQuery({
     queryKey: ["engines"],
     queryFn: () => invoke<DockerEngine[]>("engines.list"),
-    refetchInterval: 10_000,
+    refetchInterval: powerInterval(mode, 10_000, 60_000),
+    refetchIntervalInBackground: true,
   });
 }
 
@@ -37,10 +42,12 @@ export function useHostGroups() {
 }
 
 export function useContainers(engineId?: string) {
+  const mode = usePower((s) => s.mode);
   return useQuery({
     queryKey: ["containers", engineId ?? "all"],
     queryFn: () => invoke<Container[]>("containers.list", engineId ? { engineId } : {}),
-    refetchInterval: 5000,
+    refetchInterval: powerInterval(mode, 5_000, 30_000),
+    refetchIntervalInBackground: true,
   });
 }
 
@@ -54,35 +61,44 @@ export function useContainer(id: string | null) {
 }
 
 export function useImages(engineId?: string) {
+  const mode = usePower((s) => s.mode);
   return useQuery({
     queryKey: ["images", engineId ?? "all"],
     queryFn: () => invoke<DockerImage[]>("images.list", engineId ? { engineId } : {}),
+    refetchInterval: powerInterval(mode, 30_000, 120_000),
+    refetchIntervalInBackground: true,
   });
 }
 
 export function useTunnels() {
+  const mode = usePower((s) => s.mode);
   return useQuery({
     queryKey: ["tunnels"],
     queryFn: () => invoke<Tunnel[]>("tunnels.list"),
-    refetchInterval: 5000,
+    refetchInterval: powerInterval(mode, 5_000, 30_000),
+    refetchIntervalInBackground: true,
   });
 }
 
 export function useHostStats(hostId: string | null) {
+  const mode = usePower((s) => s.mode);
   return useQuery({
     queryKey: ["host-stats", hostId],
     queryFn: () => invoke<HostStats | null>("hosts.stats", { hostId }),
     enabled: !!hostId,
-    refetchInterval: 5000,
+    refetchInterval: powerInterval(mode, 5_000, 30_000),
+    refetchIntervalInBackground: true,
   });
 }
 
 export function useHostStatsHistory(hostId: string | null) {
+  const mode = usePower((s) => s.mode);
   return useQuery({
     queryKey: ["host-stats-history", hostId],
     queryFn: () => invoke<HostStatsHistoryPoint[]>("hosts.stats_history", { hostId }),
     enabled: !!hostId,
-    refetchInterval: 30_000,
+    refetchInterval: powerInterval(mode, 30_000, 120_000),
+    refetchIntervalInBackground: true,
   });
 }
 
@@ -117,9 +133,53 @@ export function useTunnelAction() {
 
 export function usePullImage() {
   const queryClient = qc();
+  const addTask = useTaskStore((s) => s.addTask);
+
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void onEvent<{
+      taskId: string;
+      image: string;
+      percent?: number;
+      status: string;
+      detail?: string;
+      state?: "done" | "error";
+    }>("docker:pull-progress", (event) => {
+      if (!active) return;
+      const store = useTaskStore.getState();
+      const task = store.tasks.find((item) => item.id === event.taskId);
+      if (!task) return;
+      store.updateTask(event.taskId, {
+        progress: event.percent ?? task.progress,
+        detail: event.detail ? `${event.status} · ${event.detail}` : event.status,
+        status: event.state === "done" ? "done" : event.state === "error" ? "error" : "running",
+      });
+      if (event.state === "done") {
+        void queryClient.invalidateQueries({ queryKey: ["images"] });
+      }
+    }).then((cleanup) => {
+      if (active) unlisten = cleanup;
+      else cleanup();
+    });
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [queryClient]);
+
   return useMutation({
     mutationFn: ({ image, engineId }: { image: string; engineId?: string }) =>
       invoke("images.pull", { image, engineId }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["images"] }),
+    onSuccess: (taskId: unknown, variables) => {
+      addTask({
+        id: String(taskId),
+        title: `拉取 ${variables.image}`,
+        kind: "pull",
+        status: "running",
+        progress: 0,
+        detail: "等待 Docker 返回进度…",
+      });
+    },
   });
 }
