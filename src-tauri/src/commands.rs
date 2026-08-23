@@ -51,7 +51,9 @@ pub async fn power_state_set(
     state: State<'_, AppState>,
     power_state: PowerState,
 ) -> CmdResult<crate::services::power::PowerSnapshot> {
-    Ok(state.power.set_state(power_state).await)
+    let snapshot = state.power.set_state(power_state).await;
+    crate::services::macos_power::set_thread_qos(snapshot.state);
+    Ok(snapshot)
 }
 
 // ---------------------------------------------------------------------------

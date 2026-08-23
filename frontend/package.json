@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "e2e": "playwright test",
     "preview": "vite preview",
     "lint": "tsc --noEmit"
   },
@@ -41,6 +42,7 @@
     "zustand": "^5.0.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.0.0",
     "@tauri-apps/api": "^2.2.0",
     "@tauri-apps/cli": "^2.2.0",

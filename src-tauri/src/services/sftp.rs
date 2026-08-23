@@ -192,6 +192,7 @@ impl SftpManager {
         direction: TransferDirection,
         resume: bool,
     ) -> Result<(), SshError> {
+        let _activity = crate::services::macos_power::begin_activity("DevDeck SFTP transfer");
         self.cancelled.lock().await.remove(task_id);
         let sftp = self.ssh.open_sftp(session_id).await?;
         let result = match direction {
