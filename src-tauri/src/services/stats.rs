@@ -35,6 +35,10 @@ impl StatsCollector {
 
     /// Parse the batch command output into HostStats.
     pub fn parse_batch(&self, host_id: &str, output: &str) -> Option<HostStats> {
+        Self::parse_batch_output(host_id, output)
+    }
+
+    pub fn parse_batch_output(host_id: &str, output: &str) -> Option<HostStats> {
         let mut cpu = 0.0_f64;
         let mut mem_total = 0_u64;
         let mut mem_used = 0_u64;
@@ -110,7 +114,33 @@ impl StatsCollector {
         self.cache.lock().await.latest.get(host_id).cloned()
     }
 
-    pub async fn history(&self, host_id: &str) -> Vec<HostStatsHistoryPoint> {
+pub async fn history(&self, host_id: &str) -> Vec<HostStatsHistoryPoint> {
         self.cache.lock().await.history.get(host_id).cloned().unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_batch_metrics() {
+        let stats = StatsCollector::parse_batch_output(
+            "host-1",
+            "cpu=12.5\nmem=2000:750\ndisk=10000:4200\nload=0.75\nuptime=3600\n",
+        ).expect("valid metrics should parse");
+        assert_eq!(stats.host_id, "host-1");
+        assert_eq!(stats.cpu_percent, 12.5);
+        assert_eq!(stats.mem_total_bytes, 2000);
+        assert_eq!(stats.mem_used_bytes, 750);
+        assert_eq!(stats.disk_total_bytes, 10000);
+        assert_eq!(stats.disk_used_bytes, 4200);
+        assert_eq!(stats.load_avg1, 0.75);
+        assert_eq!(stats.uptime_seconds, 3600);
+    }
+
+    #[test]
+    fn rejects_empty_batch_metrics() {
+        assert!(StatsCollector::parse_batch_output("host-1", "stderr: unavailable\n").is_none());
     }
 }

@@ -99,12 +99,23 @@ pub fn run() {
             let app_bg = app_handle.clone();
             tauri::async_runtime::spawn(async move {
                 // probe local engines on startup
-                if let Err(e) = docker_bg.probe().await {
-                    tracing::warn!("docker probe failed: {e}");
+                let engines = match docker_bg.probe().await {
+                    Ok(engines) => engines,
+                    Err(e) => {
+                        tracing::warn!("docker probe failed: {e}");
+                        return;
+                    }
+                };
+                // Forward each reachable engine independently. This avoids a
+                // hard-coded OrbStack id and lets Docker Desktop/Colima/Podman
+                // receive the same self-healing events + snapshot compensation.
+                for engine in engines {
+                    let docker = docker_bg.clone();
+                    let app = app_bg.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = docker.run_event_forwarding(app, &engine.id).await;
+                    });
                 }
-                // forward docker events → frontend (self-healing: reconnect +
-                // snapshot compensation on every successful re-connect)
-                let _ = docker_bg.run_event_forwarding(app_bg, "local-orbstack").await;
             });
 
             app.manage(AppState {
