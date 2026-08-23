@@ -245,6 +245,7 @@ pub async fn hosts_save(
     state: State<'_, AppState>,
     mut host: Host,
     password: Option<String>,
+    private_key: Option<String>,
 ) -> CmdResult<()> {
     // optional password → Keychain, DB keeps only the account ref
     if let Some(pw) = password.filter(|p| !p.is_empty()) {
@@ -252,6 +253,10 @@ pub async fn hosts_save(
             crate::infra::keychain::account_for(&host.user, &host.address, host.port);
         crate::infra::keychain::store_password(&account, &pw).map_err(|e| e.to_string())?;
         host.credential_ref = Some(account);
+    }
+    if let Some(private_key) = private_key.filter(|key| !key.trim().is_empty()) {
+        let account = crate::infra::keychain::account_for(&host.user, &host.address, host.port);
+        crate::infra::keychain::store_private_key(&account, &private_key).map_err(|e| e.to_string())?;
     }
     let db = state.db.lock().await;
     db.upsert_host(&host).map_err(|e| e.to_string())
@@ -414,13 +419,13 @@ pub async fn images_remove(state: State<'_, AppState>, engine_id: String, id: St
 // volumes / networks (Phase 2 detail)
 // ---------------------------------------------------------------------------
 #[tauri::command]
-pub async fn volumes_list(_state: State<'_, AppState>, _engine_id: Option<String>) -> CmdResult<Vec<DockerVolume>> {
-    Ok(vec![])
+pub async fn volumes_list(state: State<'_, AppState>, engine_id: Option<String>) -> CmdResult<Vec<DockerVolume>> {
+    state.docker.list_volumes(engine_id.as_deref()).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn networks_list(_state: State<'_, AppState>, _engine_id: Option<String>) -> CmdResult<Vec<DockerNetwork>> {
-    Ok(vec![])
+pub async fn networks_list(state: State<'_, AppState>, engine_id: Option<String>) -> CmdResult<Vec<DockerNetwork>> {
+    state.docker.list_networks(engine_id.as_deref()).await.map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------

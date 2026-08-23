@@ -49,3 +49,19 @@ pub fn delete_password(account: &str) -> Result<(), KeychainError> {
 pub fn account_for(user: &str, host: &str, port: u16) -> String {
     format!("{user}@{host}:{port}")
 }
+
+pub fn private_key_account(user: &str, host: &str, port: u16) -> String {
+    format!("{}:private-key", account_for(user, host, port))
+}
+
+pub fn store_private_key(account: &str, private_key_pem: &str) -> Result<(), KeychainError> {
+    store_password(&private_key_account_ref(account), private_key_pem)
+}
+
+pub fn load_private_key(account: &str) -> Result<String, KeychainError> {
+    load_password(&private_key_account_ref(account))
+}
+
+fn private_key_account_ref(account: &str) -> String {
+    format!("{account}:private-key")
+}

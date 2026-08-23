@@ -5,6 +5,8 @@
 use bollard::container::{ListContainersOptions, LogsOptions, RemoveContainerOptions};
 use bollard::exec::{CreateExecOptions, ResizeExecOptions, StartExecOptions, StartExecResults};
 use bollard::image::{ListImagesOptions, RemoveImageOptions};
+use bollard::network::ListNetworksOptions;
+use bollard::volume::ListVolumesOptions;
 use bollard::models::{ContainerSummary, CreateImageInfo, ImageSummary};
 use bollard::service::EventMessage;
 use bollard::system::EventsOptions;
@@ -233,6 +235,51 @@ impl DockerManager {
                 Ok(out)
             }
         }
+    }
+
+    pub async fn list_volumes(&self, engine_id: Option<&str>) -> Result<Vec<crate::models::DockerVolume>, DockerError> {
+        let ids = match engine_id {
+            Some(id) => vec![id.to_string()],
+            None => self.engines.lock().await.keys().cloned().collect(),
+        };
+        let mut result = Vec::new();
+        for id in ids {
+            let client = self.client(&id).await?;
+            let response = client.list_volumes(Some(ListVolumesOptions::<String>::default())).await?;
+            for volume in response.volumes.unwrap_or_default() {
+                result.push(crate::models::DockerVolume {
+                    id: volume.name.clone(),
+                    name: volume.name,
+                    engine_id: id.clone(),
+                    driver: volume.driver,
+                    mountpoint: volume.mountpoint,
+                    scope: volume.scope.map(|scope| format!("{scope:?}")).unwrap_or_default(),
+                });
+            }
+        }
+        Ok(result)
+    }
+
+    pub async fn list_networks(&self, engine_id: Option<&str>) -> Result<Vec<crate::models::DockerNetwork>, DockerError> {
+        let ids = match engine_id {
+            Some(id) => vec![id.to_string()],
+            None => self.engines.lock().await.keys().cloned().collect(),
+        };
+        let mut result = Vec::new();
+        for id in ids {
+            let client = self.client(&id).await?;
+            for network in client.list_networks(Some(ListNetworksOptions::<String>::default())).await? {
+                result.push(crate::models::DockerNetwork {
+                    id: network.id.unwrap_or_default(),
+                    name: network.name.unwrap_or_default(),
+                    engine_id: id.clone(),
+                    driver: network.driver.unwrap_or_default(),
+                    scope: network.scope.unwrap_or_default(),
+                    containers: network.containers.map(|containers| containers.len() as i64),
+                });
+            }
+        }
+        Ok(result)
     }
 
     pub async fn pull_image(

@@ -171,9 +171,13 @@ impl SshManager {
         host: &Host,
         password: Option<&str>,
     ) -> Result<bool, SshError> {
-        // 1) try public key auth with default ~/.ssh keys (G5 — keychain
+        // 1) try the user's running ssh-agent.
+        if Self::auth_with_agent(client, &host.user).await? {
+            return Ok(true);
+        }
+        // 2) try public key auth with default ~/.ssh keys (G5 — keychain
         //    private keys arrive in a later pass)
-        if Self::auth_with_keys(client, &host.user).await? {
+        if Self::auth_with_keys(client, host).await? {
             return Ok(true);
         }
         // 2) password auth
@@ -195,11 +199,29 @@ impl SshManager {
         }
     }
 
+    async fn auth_with_agent(client: &mut Handle<SessionHandler>, user: &str) -> Result<bool, SshError> {
+        let Some(socket) = std::env::var_os("SSH_AUTH_SOCK") else { return Ok(false); };
+        let stream = match tokio::net::UnixStream::connect(socket).await {
+            Ok(stream) => stream,
+            Err(_) => return Ok(false),
+        };
+        let mut agent = russh::keys::agent::client::AgentClient::connect(stream);
+        let identities = agent.request_identities().await.map_err(|e| SshError::Auth(format!("ssh-agent identities: {e}")))?;
+        for key in identities {
+            match client.authenticate_publickey_with(user, key, None, &mut agent).await {
+                Ok(AuthResult::Success) => return Ok(true),
+                Ok(_) => continue,
+                Err(e) => tracing::debug!(err = %e, "ssh-agent key rejected"),
+            }
+        }
+        Ok(false)
+    }
+
     /// Try `~/.ssh/id_ed25519` / `id_ecdsa` / `id_rsa` (unencrypted) as the
     /// authentication identity. Returns true on first success.
     async fn auth_with_keys(
         client: &mut Handle<SessionHandler>,
-        user: &str,
+        host: &Host,
     ) -> Result<bool, SshError> {
         use russh::keys::decode_secret_key;
         use russh::keys::PrivateKeyWithHashAlg;
@@ -217,7 +239,7 @@ impl SshManager {
                 continue;
             };
             let key = PrivateKeyWithHashAlg::new(std::sync::Arc::new(key), None);
-            match client.authenticate_publickey(user, key).await {
+            match client.authenticate_publickey(&host.user, key).await {
                 Ok(AuthResult::Success) => {
                     tracing::info!(path = %path.display(), "public key auth ok");
                     return Ok(true);
@@ -226,6 +248,15 @@ impl SshManager {
                 Err(e) => {
                     tracing::debug!(path = %path.display(), err = %e, "key auth failed");
                     continue;
+                }
+            }
+        }
+        let account = crate::infra::keychain::account_for(&host.user, &host.address, host.port);
+        if let Ok(pem) = crate::infra::keychain::load_private_key(&account) {
+            if let Ok(key) = decode_secret_key(&pem, None) {
+                let key = PrivateKeyWithHashAlg::new(std::sync::Arc::new(key), None);
+                if matches!(client.authenticate_publickey(&host.user, key).await, Ok(AuthResult::Success)) {
+                    return Ok(true);
                 }
             }
         }
@@ -378,6 +409,7 @@ impl SshManager {
             .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
             .await
             .map_err(|e| SshError::Channel(e.to_string()))?;
+        let _ = channel.agent_forward(true).await;
         channel
             .exec(true, "$SHELL")
             .await
