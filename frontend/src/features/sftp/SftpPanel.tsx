@@ -18,6 +18,7 @@ type TransferEvent = {
   state?: "running" | "done" | "error";
   error?: string;
 };
+type BatchTransferEvent = { taskId: string; state: "done" | "error"; completed: number; total: number; failed: number };
 
 function parentPath(path: string) {
   if (path === "/" || path === ".") return path;
@@ -113,23 +114,30 @@ export default function SftpPanel(_props: PanelProps) {
         detail: event.error ?? `${event.direction === "upload" ? "上传" : "下载"} ${event.completedBytes ?? 0}/${event.totalBytes ?? 0}`,
       });
     }).then((unlisten) => { cleanup = unlisten; });
-    return () => cleanup?.();
+    let batchCleanup: (() => void) | undefined;
+    void onEvent<BatchTransferEvent>("sftp:batch-progress", (event) => {
+      const task = useTaskStore.getState().tasks.find((item) => item.id === event.taskId);
+      if (!task) return;
+      updateTask(event.taskId, {
+        progress: event.total ? Math.round((event.completed / event.total) * 100) : 100,
+        status: event.state,
+        detail: event.failed ? `${event.completed}/${event.total}，失败 ${event.failed} 个` : `${event.completed}/${event.total} 个文件已完成`,
+      });
+    }).then((unlisten) => { batchCleanup = unlisten; });
+    return () => { cleanup?.(); batchCleanup?.(); };
   }, [updateTask]);
 
   const startTransfer = async (direction: "upload" | "download") => {
     if (!sessionId) return;
     const source = direction === "upload" ? localSelected : remoteSelected;
-    if (!source || source.kind === "directory") return;
+    if (!source) return;
     const local = direction === "upload" ? source.path : `${localPath}/${source.name}`;
     const remote = direction === "upload" ? `${remotePath}/${source.name}` : source.path;
-    const taskId = await invoke<string>("sftp_transfer", {
-      sessionId,
-      localPath: local,
-      remotePath: remote,
-      direction,
-      resume: true,
-    });
-    addTask({ id: taskId, title: `${direction === "upload" ? "上传" : "下载"} ${source.name}`, kind: direction, status: "running", progress: 0, detail: "等待传输…", meta: { command: "sftp_transfer", sessionId, localPath: local, remotePath: remote, direction } });
+    const command = source.kind === "directory" ? "sftp_transfer_batch" : "sftp_transfer";
+    const taskId = await invoke<string>(command, source.kind === "directory"
+      ? { input: { sessionId, localPath: local, remotePath: remote, direction, concurrency: 4 } }
+      : { sessionId, localPath: local, remotePath: remote, direction, resume: true });
+    addTask({ id: taskId, title: `${direction === "upload" ? "上传" : "下载"} ${source.name}`, kind: direction, status: "running", progress: 0, detail: source.kind === "directory" ? "正在展开目录…" : "等待传输…", meta: { command, sessionId, localPath: local, remotePath: remote, direction } });
   };
 
   const startDroppedTransfer = async (entry: SftpEntry, direction: "upload" | "download") => {
@@ -174,8 +182,8 @@ export default function SftpPanel(_props: PanelProps) {
         </section>
       </div>
       <div className="flex items-center justify-center gap-2 border-t border-border-subtle px-3 py-2">
-        <Button variant="secondary" size="sm" disabled={!canTransfer || !localSelected || localSelected.kind === "directory"} onClick={() => void startTransfer("upload")}><HardDriveUpload />上传选中</Button>
-        <Button variant="secondary" size="sm" disabled={!canTransfer || !remoteSelected || remoteSelected.kind === "directory"} onClick={() => void startTransfer("download")}><HardDriveDownload />下载选中</Button>
+        <Button variant="secondary" size="sm" disabled={!canTransfer || !localSelected} onClick={() => void startTransfer("upload")}><HardDriveUpload />上传选中</Button>
+        <Button variant="secondary" size="sm" disabled={!canTransfer || !remoteSelected} onClick={() => void startTransfer("download")}><HardDriveDownload />下载选中</Button>
       </div>
     </div>
   );

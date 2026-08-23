@@ -24,6 +24,12 @@ use russh::keys::PublicKey;
 use russh::{ChannelMsg, Disconnect};
 use russh_sftp::client::SftpSession;
 
+#[derive(Debug, Clone)]
+pub struct RemoteForwardTarget {
+    pub local_host: String,
+    pub local_port: u16,
+}
+
 #[derive(Error, Debug)]
 pub enum SshError {
     #[error("ssh connect error: {0}")]
@@ -60,6 +66,7 @@ struct SessionHandler {
     host: String,
     port: u16,
     hostkey: HostKeyResolver,
+    remote_forwards: Arc<Mutex<HashMap<String, RemoteForwardTarget>>>,
 }
 
 impl Handler for SessionHandler {
@@ -93,6 +100,25 @@ impl Handler for SessionHandler {
         );
         Ok(())
     }
+
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        _connected_address: &str,
+        _connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        let target = self.remote_forwards.lock().await.get(&self.session_id).cloned();
+        let Some(target) = target else { return Ok(()); };
+        tokio::spawn(async move {
+            let Ok(mut local) = tokio::net::TcpStream::connect((target.local_host.as_str(), target.local_port)).await else { return; };
+            let mut forwarded = channel.into_stream();
+            let _ = tokio::io::copy_bidirectional(&mut local, &mut forwarded).await;
+        });
+        Ok(())
+    }
 }
 
 pub struct SshManager {
@@ -105,6 +131,7 @@ pub struct SshManager {
     /// session_id → client handle (for exec / disconnect)
     handles: Mutex<HashMap<String, Handle<SessionHandler>>>,
     host_by_session: Mutex<HashMap<String, String>>,
+    remote_forwards: Arc<Mutex<HashMap<String, RemoteForwardTarget>>>,
 }
 
 impl SshManager {
@@ -115,6 +142,7 @@ impl SshManager {
             ptys: Mutex::new(HashMap::new()),
             handles: Mutex::new(HashMap::new()),
             host_by_session: Mutex::new(HashMap::new()),
+            remote_forwards: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -220,6 +248,7 @@ impl SshManager {
             host: host.address.clone(),
             port: host.port,
             hostkey: self.hostkey.clone(),
+            remote_forwards: self.remote_forwards.clone(),
         };
 
         let addr = format!("{}:{}", host.address, host.port);
@@ -500,6 +529,39 @@ impl SshManager {
 
     pub async fn active_host_ids(&self) -> Vec<String> {
         self.host_by_session.lock().await.values().cloned().collect()
+    }
+
+    pub async fn start_remote_forward(
+        &self,
+        host_id: &str,
+        listen_addr: &str,
+        listen_port: u16,
+        local_host: &str,
+        local_port: u16,
+    ) -> Result<u16, SshError> {
+        let mut handles = self.handles.lock().await;
+        let session_id = self.host_by_session.lock().await.iter()
+            .find_map(|(session_id, current_host)| (current_host == host_id).then_some(session_id.clone()))
+            .ok_or_else(|| SshError::SessionNotFound(format!("no active session for host {host_id}")))?;
+        let handle = handles.get_mut(&session_id).ok_or_else(|| SshError::SessionNotFound(session_id.clone()))?;
+        let bound_port = handle.tcpip_forward(listen_addr.to_string(), listen_port as u32).await
+            .map_err(|e| SshError::Channel(format!("request remote forwarding: {e}")))? as u16;
+        self.remote_forwards.lock().await.insert(session_id, RemoteForwardTarget {
+            local_host: local_host.to_string(), local_port,
+        });
+        Ok(if bound_port == 0 { listen_port } else { bound_port })
+    }
+
+    pub async fn stop_remote_forward(&self, host_id: &str, listen_addr: &str, listen_port: u16) -> Result<(), SshError> {
+        let mut handles = self.handles.lock().await;
+        let session_id = self.host_by_session.lock().await.iter()
+            .find_map(|(session_id, current_host)| (current_host == host_id).then_some(session_id.clone()))
+            .ok_or_else(|| SshError::SessionNotFound(format!("no active session for host {host_id}")))?;
+        let handle = handles.get_mut(&session_id).ok_or_else(|| SshError::SessionNotFound(session_id.clone()))?;
+        handle.cancel_tcpip_forward(listen_addr.to_string(), listen_port as u32).await
+            .map_err(|e| SshError::Channel(format!("cancel remote forwarding: {e}")))?;
+        self.remote_forwards.lock().await.remove(&session_id);
+        Ok(())
     }
 
     pub async fn proxy_local_connection(

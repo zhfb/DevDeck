@@ -148,6 +148,7 @@ pub fn run() {
             sftp_rename,
             sftp_transfer,
             sftp_transfer_cancel,
+            sftp_transfer_batch,
             local_fs_list,
             engines_list,
             hosts_list,

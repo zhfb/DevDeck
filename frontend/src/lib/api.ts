@@ -381,6 +381,11 @@ mockHandlers["sftp_transfer"] = async ({ direction, localPath, remotePath }: { d
   return taskId;
 };
 mockHandlers["sftp_transfer_cancel"] = async () => ({ ok: true });
+mockHandlers["sftp_transfer_batch"] = async ({ input }: { input: { direction: "upload" | "download"; localPath: string; remotePath: string } }) => {
+  const taskId = `sftp-batch-mock-${Date.now().toString(36)}`;
+  setTimeout(() => mockEvents.emit("sftp:batch-progress", { taskId, state: "done", completed: 1, total: 1, failed: 0 }), 300);
+  return taskId;
+};
 
 // Mutation handlers — simulate latency + state change, keep UI responsive
 mockHandlers["containers.start"] = async ({ id }: { id: string }) => {

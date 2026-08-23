@@ -71,7 +71,7 @@ function TaskCard({ task, onCancel, onRetry }: { task: TaskItem; onCancel: (task
           {(task.status === "running" || task.status === "pending") && (task.kind === "upload" || task.kind === "download") && (
             <Button variant="ghost" size="sm" className="mt-1" onClick={() => onCancel(task)}>取消传输</Button>
           )}
-          {task.status === "error" && task.meta?.command === "sftp_transfer" && (
+          {task.status === "error" && (task.meta?.command === "sftp_transfer" || task.meta?.command === "sftp_transfer_batch") && (
             <Button variant="ghost" size="sm" className="mt-1" onClick={() => onRetry(task)}><RotateCw />重试</Button>
           )}
         </div>
@@ -98,15 +98,11 @@ export default function TasksPanel(_props: PanelProps) {
 
   const retryTask = async (task: TaskItem) => {
     const meta = task.meta;
-    if (!meta || meta.command !== "sftp_transfer") return;
+    if (!meta || (meta.command !== "sftp_transfer" && meta.command !== "sftp_transfer_batch")) return;
     try {
-      const taskId = await invoke<string>("sftp_transfer", {
-        sessionId: meta.sessionId,
-        localPath: meta.localPath,
-        remotePath: meta.remotePath,
-        direction: meta.direction,
-        resume: true,
-      });
+      const taskId = await invoke<string>(meta.command, meta.command === "sftp_transfer_batch"
+        ? { input: { sessionId: meta.sessionId, localPath: meta.localPath, remotePath: meta.remotePath, direction: meta.direction, concurrency: 4 } }
+        : { sessionId: meta.sessionId, localPath: meta.localPath, remotePath: meta.remotePath, direction: meta.direction, resume: true });
       addTask({ id: taskId, title: task.title, kind: task.kind, status: "running", progress: task.progress, detail: "重试中…", meta });
     } catch (error) {
       updateTask(task.id, { detail: `重试失败：${String(error)}` });

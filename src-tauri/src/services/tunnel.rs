@@ -66,8 +66,28 @@ impl TunnelManager {
             .find(|t| t.id == id)
             .ok_or_else(|| TunnelError::NotFound(id.to_string()))?
         };
+        if tunnel.type_ == "remote" {
+            let bound_port = self.ssh.start_remote_forward(
+                &tunnel.host_id,
+                &tunnel.listen_addr,
+                tunnel.listen_port,
+                &tunnel.remote_host,
+                tunnel.remote_port,
+            ).await.map_err(|e| TunnelError::Forward(e.to_string()))?;
+            let task = tokio::spawn(async { std::future::pending::<()>().await });
+            self.tasks.lock().await.insert(tunnel.id.clone(), task);
+            let db = self.db.lock().await;
+            let mut tunnels = db.list_tunnels()?;
+            if let Some(t) = tunnels.iter_mut().find(|t| t.id == id) {
+                t.status = "active".to_string();
+                t.listen_port = bound_port;
+                t.started_at = Some(crate::models::now_iso());
+                db.upsert_tunnel(t)?;
+            }
+            return Ok(());
+        }
         if tunnel.type_ != "local" {
-            return Err(TunnelError::Forward("当前版本先支持 Local Forwarding；Remote Forwarding 尚未接入".to_string()));
+            return Err(TunnelError::Forward("当前版本支持 Local/Remote Forwarding；SOCKS5 尚未接入".to_string()));
         }
         let listener = TcpListener::bind(format!("{}:{}", tunnel.listen_addr, tunnel.listen_port))
             .await
@@ -109,6 +129,14 @@ impl TunnelManager {
     }
 
     pub async fn stop(&self, id: &str) -> Result<(), TunnelError> {
+        let tunnel = {
+            let db = self.db.lock().await;
+            db.list_tunnels()?.into_iter().find(|t| t.id == id)
+        };
+        if let Some(tunnel) = tunnel.as_ref().filter(|t| t.type_ == "remote") {
+            self.ssh.stop_remote_forward(&tunnel.host_id, &tunnel.listen_addr, tunnel.listen_port)
+                .await.map_err(|e| TunnelError::Forward(e.to_string()))?;
+        }
         if let Some(handle) = self.tasks.lock().await.remove(id) {
             handle.abort();
         }

@@ -9,7 +9,7 @@ use crate::infra::db::AppDb;
 use crate::models::*;
 use crate::services::{
     docker::DockerManager, hostkey::HostKeyResolver, ssh::SshManager, stats::StatsCollector,
-    power::{PowerManager, PowerState}, sftp::{SftpManager, TransferDirection}, tunnel::TunnelManager,
+    power::{PowerManager, PowerState}, sftp::{SftpManager, TransferDirection, TransferSpec}, tunnel::TunnelManager,
 };
 
 pub struct AppState {
@@ -135,6 +135,48 @@ pub async fn sftp_transfer(
 pub async fn sftp_transfer_cancel(state: State<'_, AppState>, task_id: String) -> CmdResult<()> {
     state.sftp.cancel(&task_id).await;
     Ok(())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SftpBatchInput {
+    pub session_id: String,
+    pub local_path: String,
+    pub remote_path: String,
+    pub direction: String,
+    pub concurrency: Option<usize>,
+}
+
+#[tauri::command]
+pub async fn sftp_transfer_batch(app: AppHandle, state: State<'_, AppState>, input: SftpBatchInput) -> CmdResult<String> {
+    let direction = match input.direction.as_str() {
+        "upload" => TransferDirection::Upload,
+        "download" => TransferDirection::Download,
+        other => return Err(format!("unsupported sftp direction: {other}")),
+    };
+    let specs = state.sftp.expand_transfer(&input.session_id, TransferSpec {
+        local_path: input.local_path,
+        remote_path: input.remote_path,
+        direction,
+    }).await.map_err(|e| e.to_string())?;
+    let batch_id = format!("sftp-batch-{}", uuid::Uuid::new_v4().simple());
+    let manager = state.sftp.clone();
+    let session_id = input.session_id;
+    let concurrency = input.concurrency.unwrap_or(4);
+    let event_id = batch_id.clone();
+    tauri::async_runtime::spawn(async move {
+        use tauri::Emitter;
+        let results = manager.transfer_batch(&app, &session_id, specs, concurrency).await;
+        let failed = results.iter().filter(|result| result.is_err()).count();
+        let _ = app.emit("sftp:batch-progress", serde_json::json!({
+            "taskId": event_id,
+            "state": if failed == 0 { "done" } else { "error" },
+            "completed": results.len().saturating_sub(failed),
+            "total": results.len(),
+            "failed": failed,
+        }));
+    });
+    Ok(batch_id)
 }
 
 #[tauri::command]

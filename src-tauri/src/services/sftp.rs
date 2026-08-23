@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
+use futures_util::stream::{self, StreamExt};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 
@@ -25,6 +26,14 @@ impl TransferDirection {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct TransferSpec {
+    pub local_path: String,
+    pub remote_path: String,
+    pub direction: TransferDirection,
+}
+
+#[derive(Clone)]
 pub struct SftpManager {
     ssh: Arc<SshManager>,
     cancelled: Arc<Mutex<HashSet<String>>>,
@@ -37,6 +46,75 @@ impl SftpManager {
 
     pub async fn cancel(&self, task_id: &str) {
         self.cancelled.lock().await.insert(task_id.to_string());
+    }
+
+    pub async fn expand_transfer(&self, session_id: &str, spec: TransferSpec) -> Result<Vec<TransferSpec>, SshError> {
+        match spec.direction {
+            TransferDirection::Upload => {
+                let root = tokio::fs::metadata(&spec.local_path).await
+                    .map_err(|e| SshError::Channel(format!("stat upload path: {e}")))?;
+                if !root.is_dir() { return Ok(vec![spec]); }
+                let root_path = std::path::PathBuf::from(&spec.local_path);
+                let mut stack = vec![root_path.clone()];
+                let mut result = Vec::new();
+                while let Some(path) = stack.pop() {
+                    let mut entries = tokio::fs::read_dir(&path).await
+                        .map_err(|e| SshError::Channel(format!("read upload directory: {e}")))?;
+                    while let Some(entry) = entries.next_entry().await.map_err(|e| SshError::Channel(format!("read upload entry: {e}")))? {
+                        let child = entry.path();
+                        let file_type = entry.file_type().await.map_err(|e| SshError::Channel(e.to_string()))?;
+                        if file_type.is_dir() {
+                            stack.push(child);
+                        } else if file_type.is_file() {
+                            let rel = child.strip_prefix(&root_path).map_err(|e| SshError::Channel(e.to_string()))?;
+                            result.push(TransferSpec { local_path: child.to_string_lossy().to_string(), remote_path: join_remote(&spec.remote_path, &rel.to_string_lossy()), direction: spec.direction });
+                        }
+                    }
+                }
+                Ok(result)
+            }
+            TransferDirection::Download => {
+                let sftp = self.ssh.open_sftp(session_id).await?;
+                let root_meta = sftp.metadata(&spec.remote_path).await.map_err(|e| SshError::Channel(format!("stat download path: {e}")))?;
+                if !root_meta.is_dir() { let _ = sftp.close().await; return Ok(vec![spec]); }
+                let root = normalize_remote_path(&spec.remote_path);
+                let mut stack = vec![root.clone()];
+                let mut result = Vec::new();
+                while let Some(path) = stack.pop() {
+                    let mut dir = sftp.read_dir(&path).await.map_err(|e| SshError::Channel(format!("read download directory: {e}")))?;
+                    while let Some(entry) = dir.next() {
+                        let child = entry.path();
+                        let metadata = entry.metadata();
+                        if metadata.is_dir() {
+                            stack.push(child);
+                        } else if metadata.is_regular() {
+                            let rel = child.strip_prefix(&root).unwrap_or(&child).trim_start_matches('/');
+                            result.push(TransferSpec { local_path: std::path::Path::new(&spec.local_path).join(rel).to_string_lossy().to_string(), remote_path: child, direction: spec.direction });
+                        }
+                    }
+                }
+                let _ = sftp.close().await;
+                Ok(result)
+            }
+        }
+    }
+
+    pub async fn transfer_batch(&self, app: &AppHandle, session_id: &str, specs: Vec<TransferSpec>, concurrency: usize) -> Vec<Result<(), SshError>> {
+        let manager = Arc::new(self.clone());
+        let session_id = session_id.to_string();
+        stream::iter(specs.into_iter().enumerate())
+            .map(|(index, spec)| {
+                let manager = manager.clone();
+                let app = app.clone();
+                let session_id = session_id.clone();
+                async move {
+                    let task_id = format!("batch-{index}-{}", uuid::Uuid::new_v4().simple());
+                    manager.transfer(&app, &task_id, &session_id, &spec.local_path, &spec.remote_path, spec.direction, true).await
+                }
+            })
+            .buffer_unordered(concurrency.clamp(1, 8))
+            .collect()
+            .await
     }
 
     pub async fn list(&self, session_id: &str, path: &str) -> Result<Vec<SftpEntry>, SshError> {
@@ -208,6 +286,9 @@ impl SftpManager {
         if offset == 0 {
             options.truncate(true);
         }
+        if let Some(parent) = std::path::Path::new(local_path).parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| SshError::Channel(format!("create download directory: {e}")))?;
+        }
         let mut local = options
             .open(local_path)
             .await
@@ -291,6 +372,12 @@ pub fn normalize_remote_path(path: &str) -> String {
     if trimmed.is_empty() { "/".to_string() }
     else if trimmed.starts_with('/') { trimmed.trim_end_matches('/').to_string().if_empty(|| "/".to_string()) }
     else { format!("/{}", trimmed.trim_end_matches('/')) }
+}
+
+fn join_remote(root: &str, relative: &str) -> String {
+    let root = normalize_remote_path(root);
+    let relative = relative.replace('\\', "/").trim_matches('/').to_string();
+    if relative.is_empty() { root } else if root == "/" { format!("/{relative}") } else { format!("{root}/{relative}") }
 }
 
 trait EmptyPath {
