@@ -145,6 +145,7 @@ pub fn run() {
             sftp_remove,
             sftp_rename,
             sftp_transfer,
+            sftp_transfer_cancel,
             local_fs_list,
             engines_list,
             hosts_list,

@@ -132,6 +132,12 @@ pub async fn sftp_transfer(
 }
 
 #[tauri::command]
+pub async fn sftp_transfer_cancel(state: State<'_, AppState>, task_id: String) -> CmdResult<()> {
+    state.sftp.cancel(&task_id).await;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn local_fs_list(path: Option<String>) -> CmdResult<Vec<crate::models::SftpEntry>> {
     let path = path.unwrap_or_else(|| ".".to_string());
     let dir = std::path::PathBuf::from(&path);

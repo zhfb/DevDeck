@@ -380,6 +380,7 @@ mockHandlers["sftp_transfer"] = async ({ direction, localPath, remotePath }: { d
   })();
   return taskId;
 };
+mockHandlers["sftp_transfer_cancel"] = async () => ({ ok: true });
 
 // Mutation handlers — simulate latency + state change, keep UI responsive
 mockHandlers["containers.start"] = async ({ id }: { id: string }) => {

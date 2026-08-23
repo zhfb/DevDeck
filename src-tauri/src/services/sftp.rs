@@ -1,7 +1,9 @@
 use std::sync::Arc;
+use std::collections::HashSet;
 
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::Mutex;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 
@@ -25,11 +27,16 @@ impl TransferDirection {
 
 pub struct SftpManager {
     ssh: Arc<SshManager>,
+    cancelled: Arc<Mutex<HashSet<String>>>,
 }
 
 impl SftpManager {
     pub fn new(ssh: Arc<SshManager>) -> Self {
-        Self { ssh }
+        Self { ssh, cancelled: Arc::new(Mutex::new(HashSet::new())) }
+    }
+
+    pub async fn cancel(&self, task_id: &str) {
+        self.cancelled.lock().await.insert(task_id.to_string());
     }
 
     pub async fn list(&self, session_id: &str, path: &str) -> Result<Vec<SftpEntry>, SshError> {
@@ -107,6 +114,7 @@ impl SftpManager {
         direction: TransferDirection,
         resume: bool,
     ) -> Result<(), SshError> {
+        self.cancelled.lock().await.remove(task_id);
         let sftp = self.ssh.open_sftp(session_id).await?;
         let result = match direction {
             TransferDirection::Upload => {
@@ -166,7 +174,7 @@ impl SftpManager {
                 .await
                 .map_err(|e| SshError::Channel(format!("seek remote file: {e}")))?;
         }
-        copy_with_progress(app, task_id, TransferDirection::Upload, &mut local, &mut remote, offset, total).await?;
+        copy_with_progress(&self.cancelled, app, task_id, TransferDirection::Upload, &mut local, &mut remote, offset, total).await?;
         remote.shutdown().await.map_err(|e| SshError::Channel(format!("close remote file: {e}")))?;
         Ok(())
     }
@@ -212,12 +220,13 @@ impl SftpManager {
             .seek(std::io::SeekFrom::Start(offset))
             .await
             .map_err(|e| SshError::Channel(format!("seek local file: {e}")))?;
-        copy_with_progress(app, task_id, TransferDirection::Download, &mut remote, &mut local, offset, total).await?;
+        copy_with_progress(&self.cancelled, app, task_id, TransferDirection::Download, &mut remote, &mut local, offset, total).await?;
         Ok(())
     }
 }
 
 async fn copy_with_progress<R, W>(
+    cancelled: &Arc<Mutex<HashSet<String>>>,
     app: &AppHandle,
     task_id: &str,
     direction: TransferDirection,
@@ -232,6 +241,18 @@ where
 {
     let mut buffer = vec![0_u8; 256 * 1024];
     loop {
+        if cancelled.lock().await.contains(task_id) {
+            let _ = app.emit("sftp:progress", serde_json::json!({
+                "taskId": task_id,
+                "direction": direction.as_str(),
+                "completedBytes": completed,
+                "totalBytes": total,
+                "percent": if total == 0 { 0 } else { ((completed as f64 / total as f64) * 100.0).round() as u8 },
+                "state": "error",
+                "error": "传输已取消",
+            }));
+            return Err(SshError::Channel("transfer cancelled".to_string()));
+        }
         let read = reader
             .read(&mut buffer)
             .await

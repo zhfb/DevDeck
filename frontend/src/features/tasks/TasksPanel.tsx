@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { useTaskStore, type TaskItem, type TaskKind, type TaskStatus } from "./taskStore";
+import { invoke } from "@/lib/api";
 
 const KIND_LABEL: Record<TaskKind, string> = {
   pull: "拉取",
@@ -34,7 +35,7 @@ function StatusIcon({ status }: { status: TaskStatus }) {
   }
 }
 
-function TaskCard({ task }: { task: TaskItem }) {
+function TaskCard({ task, onCancel }: { task: TaskItem; onCancel: (task: TaskItem) => void }) {
   const indicatorClass =
     task.status === "error"
       ? "bg-danger"
@@ -67,6 +68,9 @@ function TaskCard({ task }: { task: TaskItem }) {
             <Progress value={task.progress} indicatorClassName={indicatorClass} className="flex-1" />
             <span className="mono-caption w-9 shrink-0 text-right text-quaternary">{task.progress}%</span>
           </div>
+          {(task.status === "running" || task.status === "pending") && (task.kind === "upload" || task.kind === "download") && (
+            <Button variant="ghost" size="sm" className="mt-1" onClick={() => onCancel(task)}>取消传输</Button>
+          )}
         </div>
       </div>
     </div>
@@ -77,6 +81,16 @@ function TaskCard({ task }: { task: TaskItem }) {
 export default function TasksPanel(_props: PanelProps) {
   const tasks = useTaskStore((s) => s.tasks);
   const clearFinished = useTaskStore((s) => s.clearFinished);
+  const updateTask = useTaskStore((s) => s.updateTask);
+
+  const cancelTask = async (task: TaskItem) => {
+    try {
+      await invoke("sftp_transfer_cancel", { taskId: task.id });
+      updateTask(task.id, { status: "error", detail: "传输已取消" });
+    } catch (error) {
+      updateTask(task.id, { status: "error", detail: String(error) });
+    }
+  };
 
   const activeCount = tasks.filter((t) => t.status === "pending" || t.status === "running").length;
   const finishedCount = tasks.length - activeCount;
@@ -114,7 +128,7 @@ export default function TasksPanel(_props: PanelProps) {
         ) : (
           <div className="flex flex-col gap-2 p-3">
             {tasks.map((t) => (
-              <TaskCard key={t.id} task={t} />
+              <TaskCard key={t.id} task={t} onCancel={cancelTask} />
             ))}
           </div>
         )}
