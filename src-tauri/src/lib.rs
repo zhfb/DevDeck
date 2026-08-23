@@ -97,6 +97,7 @@ pub fn run() {
             // background tasks
             let docker_bg = docker.clone();
             let app_bg = app_handle.clone();
+            let power_bg = power.clone();
             tauri::async_runtime::spawn(async move {
                 // probe local engines on startup
                 let engines = match docker_bg.probe().await {
@@ -112,8 +113,9 @@ pub fn run() {
                 for engine in engines {
                     let docker = docker_bg.clone();
                     let app = app_bg.clone();
+                    let power = power_bg.clone();
                     tauri::async_runtime::spawn(async move {
-                        let _ = docker.run_event_forwarding(app, &engine.id).await;
+                        let _ = docker.run_event_forwarding(app, &engine.id, power).await;
                     });
                 }
             });

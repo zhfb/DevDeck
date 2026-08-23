@@ -20,6 +20,7 @@ use tauri::{AppHandle, Emitter};
 use crate::models::{
     Container, DockerEngine, DockerEventItem, DockerImage, Mount, PortMapping,
 };
+use crate::services::power::PowerManager;
 
 #[derive(Error, Debug)]
 pub enum DockerError {
@@ -422,6 +423,7 @@ impl DockerManager {
         &self,
         app: tauri::AppHandle,
         engine_id: &str,
+        power: PowerManager,
     ) -> Result<(), String> {
         use futures_util::StreamExt;
         use tauri::Emitter;
@@ -448,20 +450,38 @@ impl DockerManager {
                     }
 
                     let mut stream = Box::pin(stream);
+                    let mut batch = Vec::with_capacity(32);
                     loop {
-                        match stream.next().await {
-                            Some(ev) => {
-                                let _ = app.emit(
-                                    "docker:events",
-                                    serde_json::json!({ "events": [ev] }),
-                                );
+                        match tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await {
+                            Ok(Some(ev)) => {
+                                if power.snapshot().await.policy.render_events {
+                                    let _ = app.emit("docker:events", serde_json::json!({ "events": [ev] }));
+                                } else {
+                                    batch.push(ev);
+                                    // Keep background buffering bounded. The UI
+                                    // can request a fresh snapshot on resume.
+                                    if batch.len() >= 50 {
+                                        let events = std::mem::take(&mut batch);
+                                        let _ = app.emit("docker:events", serde_json::json!({ "events": events }));
+                                    }
+                                }
                             }
-                            None => {
+                            Ok(None) => {
+                                if !batch.is_empty() {
+                                    let events = std::mem::take(&mut batch);
+                                    let _ = app.emit("docker:events", serde_json::json!({ "events": events }));
+                                }
                                 tracing::warn!(
                                     engine_id,
                                     "docker events stream disconnected, reconnecting in 3s"
                                 );
                                 break;
+                            }
+                            Err(_) => {
+                                if !batch.is_empty() {
+                                    let events = std::mem::take(&mut batch);
+                                    let _ = app.emit("docker:events", serde_json::json!({ "events": events }));
+                                }
                             }
                         }
                     }
