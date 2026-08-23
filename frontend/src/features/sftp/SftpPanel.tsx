@@ -129,7 +129,7 @@ export default function SftpPanel(_props: PanelProps) {
       direction,
       resume: true,
     });
-    addTask({ id: taskId, title: `${direction === "upload" ? "上传" : "下载"} ${source.name}`, kind: "upload", status: "running", progress: 0, detail: "等待传输…" });
+    addTask({ id: taskId, title: `${direction === "upload" ? "上传" : "下载"} ${source.name}`, kind: direction, status: "running", progress: 0, detail: "等待传输…", meta: { command: "sftp_transfer", sessionId, localPath: local, remotePath: remote, direction } });
   };
 
   const startDroppedTransfer = async (entry: SftpEntry, direction: "upload" | "download") => {
@@ -137,7 +137,7 @@ export default function SftpPanel(_props: PanelProps) {
     const local = direction === "upload" ? entry.path : `${localPath}/${entry.name}`;
     const remote = direction === "upload" ? `${remotePath}/${entry.name}` : entry.path;
     const taskId = await invoke<string>("sftp_transfer", { sessionId, localPath: local, remotePath: remote, direction, resume: true });
-    addTask({ id: taskId, title: `${direction === "upload" ? "上传" : "下载"} ${entry.name}`, kind: "upload", status: "running", progress: 0, detail: "等待传输…" });
+    addTask({ id: taskId, title: `${direction === "upload" ? "上传" : "下载"} ${entry.name}`, kind: direction, status: "running", progress: 0, detail: "等待传输…", meta: { command: "sftp_transfer", sessionId, localPath: local, remotePath: remote, direction } });
   };
 
   const canTransfer = useMemo(() => Boolean(sessionId), [sessionId]);

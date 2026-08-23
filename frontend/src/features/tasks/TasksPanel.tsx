@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleDashed, ListTodo, Loader2, Trash2, XCircle } from "lucide-react";
+import { CheckCircle2, CircleDashed, ListTodo, Loader2, RotateCw, Trash2, XCircle } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
 import { EmptyState } from "@/components/shared";
 import { Button } from "@/components/ui/button";
@@ -35,7 +35,7 @@ function StatusIcon({ status }: { status: TaskStatus }) {
   }
 }
 
-function TaskCard({ task, onCancel }: { task: TaskItem; onCancel: (task: TaskItem) => void }) {
+function TaskCard({ task, onCancel, onRetry }: { task: TaskItem; onCancel: (task: TaskItem) => void; onRetry: (task: TaskItem) => void }) {
   const indicatorClass =
     task.status === "error"
       ? "bg-danger"
@@ -71,6 +71,9 @@ function TaskCard({ task, onCancel }: { task: TaskItem; onCancel: (task: TaskIte
           {(task.status === "running" || task.status === "pending") && (task.kind === "upload" || task.kind === "download") && (
             <Button variant="ghost" size="sm" className="mt-1" onClick={() => onCancel(task)}>取消传输</Button>
           )}
+          {task.status === "error" && task.meta?.command === "sftp_transfer" && (
+            <Button variant="ghost" size="sm" className="mt-1" onClick={() => onRetry(task)}><RotateCw />重试</Button>
+          )}
         </div>
       </div>
     </div>
@@ -82,6 +85,7 @@ export default function TasksPanel(_props: PanelProps) {
   const tasks = useTaskStore((s) => s.tasks);
   const clearFinished = useTaskStore((s) => s.clearFinished);
   const updateTask = useTaskStore((s) => s.updateTask);
+  const addTask = useTaskStore((s) => s.addTask);
 
   const cancelTask = async (task: TaskItem) => {
     try {
@@ -89,6 +93,23 @@ export default function TasksPanel(_props: PanelProps) {
       updateTask(task.id, { status: "error", detail: "传输已取消" });
     } catch (error) {
       updateTask(task.id, { status: "error", detail: String(error) });
+    }
+  };
+
+  const retryTask = async (task: TaskItem) => {
+    const meta = task.meta;
+    if (!meta || meta.command !== "sftp_transfer") return;
+    try {
+      const taskId = await invoke<string>("sftp_transfer", {
+        sessionId: meta.sessionId,
+        localPath: meta.localPath,
+        remotePath: meta.remotePath,
+        direction: meta.direction,
+        resume: true,
+      });
+      addTask({ id: taskId, title: task.title, kind: task.kind, status: "running", progress: task.progress, detail: "重试中…", meta });
+    } catch (error) {
+      updateTask(task.id, { detail: `重试失败：${String(error)}` });
     }
   };
 
@@ -128,7 +149,7 @@ export default function TasksPanel(_props: PanelProps) {
         ) : (
           <div className="flex flex-col gap-2 p-3">
             {tasks.map((t) => (
-              <TaskCard key={t.id} task={t} onCancel={cancelTask} />
+              <TaskCard key={t.id} task={t} onCancel={cancelTask} onRetry={retryTask} />
             ))}
           </div>
         )}

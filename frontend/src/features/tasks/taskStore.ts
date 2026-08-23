@@ -17,6 +17,7 @@ export interface TaskItem {
   /** 0-100 */
   progress: number;
   detail: string;
+  meta?: Record<string, string>;
 }
 
 /** addTask 入参：不传 id 时自动生成 */
