@@ -1,6 +1,7 @@
 pub mod auto_forward;
 pub mod compose;
 pub mod docker;
+pub mod embedded;
 pub mod hostkey;
 pub mod power;
 pub mod macos_power;

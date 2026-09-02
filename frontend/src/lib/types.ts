@@ -66,7 +66,7 @@ export interface HostStatsHistoryPoint {
 export interface DockerEngine {
   id: string;
   name: string;
-  kind: "orbstack" | "docker-desktop" | "colima" | "podman" | "ssh-remote";
+  kind: "orbstack" | "docker-desktop" | "colima" | "podman" | "ssh-remote" | "embedded";
   /** socket path for local, or hostId for SSH-bridged remote */
   endpoint: string;
   hostId?: string;
@@ -75,6 +75,20 @@ export interface DockerEngine {
   images?: number;
   reachable: boolean;
   error?: string;
+}
+
+/** DevDeck 内置 Docker 引擎（Lima vz + dockerd）状态 */
+export interface EmbeddedStatus {
+  installed: boolean;
+  limactlVersion?: string | null;
+  machine: string;
+  machineCreated: boolean;
+  running: boolean;
+  socket?: string | null;
+  socketExists: boolean;
+  engineConnected: boolean;
+  dockerVersion?: string | null;
+  error?: string | null;
 }
 
 export type ContainerState =

@@ -27,7 +27,7 @@ export function EmptyState({
   );
 }
 
-/** Engine source badge — OrbStack / Docker Desktop / Colima / Podman / SSH:host */
+/** Engine source badge — OrbStack / Docker Desktop / Colima / Podman / 内置 / SSH:host */
 export function EngineBadge({ kind, hostName }: { kind: string; hostName?: string }) {
   const label =
     kind === "orbstack"
@@ -38,17 +38,21 @@ export function EngineBadge({ kind, hostName }: { kind: string; hostName?: strin
           ? "Colima"
           : kind === "podman"
             ? "Podman"
-            : kind === "ssh-remote"
-              ? `SSH: ${hostName ?? "remote"}`
-              : kind;
+            : kind === "embedded"
+              ? "内置引擎"
+              : kind === "ssh-remote"
+                ? `SSH: ${hostName ?? "remote"}`
+                : kind;
   const cls =
     kind === "orbstack"
       ? "text-accent bg-accent-tint border-accent/20"
       : kind === "docker-desktop"
         ? "text-success bg-success-tint border-success/20"
-        : kind === "ssh-remote"
-          ? "text-warning bg-warning-tint border-warning/20"
-          : "text-muted bg-hover-fill border-border-subtle";
+        : kind === "embedded"
+          ? "text-primary bg-accent-tint border-primary/20"
+          : kind === "ssh-remote"
+            ? "text-warning bg-warning-tint border-warning/20"
+            : "text-muted bg-hover-fill border-border-subtle";
   return (
     <span
       className={cn(

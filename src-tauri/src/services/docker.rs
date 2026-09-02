@@ -69,6 +69,8 @@ impl DockerManager {
     }
 
     /// Probe local sockets, connect to the first reachable engine.
+    /// Falls back to the DevDeck self-managed embedded engine (Lima vz + dockerd)
+    /// so the app works without OrbStack / Docker Desktop / Colima.
     pub async fn probe(&self) -> Result<Vec<DockerEngine>, DockerError> {
         let mut found: Vec<DockerEngine> = Vec::new();
         let mut engines = self.engines.lock().await;
@@ -123,6 +125,46 @@ impl DockerManager {
                 },
                 Err(e) => {
                     tracing::warn!(path = %path, err = %e, "engine connect failed");
+                }
+            }
+        }
+
+        // Embedded: DevDeck 自管的内置引擎（Lima vz + dockerd）。
+        // 快速路径——只有 socket 已经就绪才接入，避免 probe 触发重负载的 VM 启动。
+        if found.is_empty() {
+            let embedded = crate::services::embedded::EmbeddedEngine::new();
+            let sock = embedded.socket_path();
+            if sock.exists() {
+                let id = crate::services::embedded::EMBEDDED_ENGINE_ID.to_string();
+                let sock_str = sock.display().to_string();
+                let docker = Docker::connect_with_unix(&sock_str, 120, API_DEFAULT_VERSION);
+                match docker {
+                    Ok(client) => match client.version().await {
+                        Ok(v) => {
+                            let engine = DockerEngine {
+                                id: id.clone(),
+                                name: "内置引擎 (Docker)".to_string(),
+                                kind: crate::services::embedded::EMBEDDED_KIND.to_string(),
+                                endpoint: sock.display().to_string(),
+                                host_id: None,
+                                version: v.version,
+                                containers: None,
+                                images: None,
+                                reachable: true,
+                                error: None,
+                            };
+                            engines.insert(id.clone(), client);
+                            meta.insert(id.clone(), engine.clone());
+                            found.push(engine);
+                            tracing::info!("embedded engine connected via {}", sock.display());
+                        }
+                        Err(e) => {
+                            tracing::warn!(sock = %sock.display(), err = %e, "embedded socket unreachable");
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!(sock = %sock.display(), err = %e, "embedded connect failed");
+                    }
                 }
             }
         }
@@ -825,6 +867,7 @@ fn engine_display_name(kind: &str) -> String {
         "docker-desktop" => "本地引擎 (Docker Desktop)".to_string(),
         "colima" => "本地引擎 (Colima)".to_string(),
         "podman" => "本地引擎 (Podman)".to_string(),
+        "embedded" => "内置引擎 (Docker)".to_string(),
         _ => kind.to_string(),
     }
 }

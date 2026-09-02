@@ -151,6 +151,9 @@ pub fn run() {
                 }
             });
 
+            // 内置引擎自动拉起：若没有外部引擎（OrbStack 等未运行），延迟片刻后
+            // 自管启动 DevDeck 的内置 dockerd VM，让应用"开箱即用"。
+            let docker_for_emb = docker.clone();
             app.manage(AppState {
                 db,
                 docker,
@@ -164,7 +167,32 @@ pub fn run() {
                 compose,
                 remote_docker,
                 zmodem,
+                embedded: crate::services::embedded::EmbeddedEngine::new(),
             });
+
+            {
+                let emb = crate::services::embedded::EmbeddedEngine::new();
+                let docker_bg = docker_for_emb;
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                    // 若已有可用引擎（如 OrbStack 正在运行），则跳过自启动
+                    if let Ok(engines) = docker_bg.probe().await {
+                        if !engines.is_empty() {
+                            tracing::info!("embedded: external engine present, skip auto-ensure");
+                            return;
+                        }
+                    }
+                    match emb.ensure().await {
+                        Ok(sock) => {
+                            tracing::info!("embedded engine ready: {}", sock.display());
+                            let _ = docker_bg.probe().await;
+                        }
+                        Err(e) => {
+                            tracing::warn!("embedded auto-ensure failed: {e}");
+                        }
+                    }
+                });
+            }
 
             // macOS 系统托盘（menu bar）—— P0
             if let Err(e) = tray::init_tray(&app_handle) {
@@ -188,6 +216,10 @@ pub fn run() {
             sftp_transfer_batch,
             local_fs_list,
             engines_list,
+            embedded_status,
+            embedded_start,
+            embedded_stop,
+            embedded_reset,
             hosts_list,
             hosts_groups,
             hosts_stats,

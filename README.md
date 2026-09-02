@@ -2,7 +2,7 @@
 
 > 暂定代号：~~MacCloud Workspace~~ → **DevDeck**
 
-macOS 原生高效远程连接与容器管理工具 —— SSH 远程终端 / SFTP 文件管理 / Docker·Podman 容器生态 / 端口隧道 / Compose，一体化工作台。
+macOS 原生高效远程连接与容器管理工具 —— SSH 远程终端 / SFTP 文件管理 / Docker·Podman 容器生态 / 端口隧道 / Compose，一体化工作台。**内置 Docker 引擎**，开箱即用，不依赖 OrbStack / Docker Desktop。
 
 基于 **Tauri v2 + Rust 异步生态** 构建，媲美原生应用的性能与低功耗，全面剥离 Electron 的高功耗负担。
 
@@ -11,11 +11,12 @@ macOS 原生高效远程连接与容器管理工具 —— SSH 远程终端 / SF
 ```
 UI 层      Tauri v2 Web · React 18 · TypeScript · Tailwind CSS · Shadcn UI · xterm.js (WebGL) · Zustand · TanStack Query · i18next
 核心层     Rust · Tokio · russh / russh-sftp · bollard (Docker/Podman) · rusqlite (SQLite WAL) · zmodem2
+内置引擎   Lima (vmType=vz, Apple Virtualization.framework) + 真 dockerd（rootless）+ socket 透传 ~/.lima/devdeck/sock/docker.sock
 系统层     macOS Keychain · Dispatch QoS · NSProcessInfo App Nap 豁免 · Tauri 托盘 · tauri-plugin-updater · Sentry
 CI/发布    GitHub Actions · 公证 (notarytool) · 签名更新源 (minisign feed) · 能耗/体积基线
 ```
 
-> 说明：K8s / VM 运行时不在当前范围（防蔓延决策，详见 `docs/` 技术评审）；Virtualization.fw 未使用。
+> 说明：K8s / 独立 VM 运行时（USB 透传 / x86 模拟）不在当前范围（防蔓延决策，详见 `docs/` 技术评审）。内置 Docker 引擎采用 Lima（Apple 原生虚拟化）承载真 dockerd，与 OrbStack 同架构。
 
 ## 功能清单
 
@@ -33,7 +34,8 @@ CI/发布    GitHub Actions · 公证 (notarytool) · 签名更新源 (minisign 
 - SFTP 双栏文件管理、目录操作、传输队列（并发 4–8）、断点续传、递归目录传输、取消与失败重试
 
 **容器与编排**
-- Docker/Podman 引擎探测（OrbStack / Docker Desktop / Colima / Podman）、容器生命周期与批量操作、一键容器 Exec 终端、镜像拉取进度、运行新容器表单（端口映射）、卷 / 网络创建删除
+- **内置 Docker 引擎（默认）**：DevDeck 自管一个 Linux 虚拟机（Apple 原生虚拟化 vz + 真 dockerd），socket 透传到 `~/.lima/devdeck/sock/docker.sock`，应用自动拉起/接入，开箱即用无需 OrbStack/Docker Desktop；设置页可启动 / 停止 / 重置；托管 `~/.devdeck/bin/docker` CLI 自动指向该 socket
+- Docker/Podman 引擎探测（OrbStack / Docker Desktop / Colima / Podman / 内置）、容器生命周期与批量操作、一键容器 Exec 终端、镜像拉取进度、运行新容器表单（端口映射）、卷 / 网络创建删除
 - **远程 Docker over SSH**：SSH 桥接远端 `docker.sock` → 本地 unix socket，以本地客户端身份管理远端引擎
 - **Compose**：经 SSH 执行 `docker compose`（up / down / logs / build / restart / pull），`compose ps` 服务状态表
 - **事件驱动端口转发**：监听 Docker 事件，容器启动时自动按端口映射暴露 localhost 隧道、停止时自动拆除
@@ -60,7 +62,7 @@ CI/发布    GitHub Actions · 公证 (notarytool) · 签名更新源 (minisign 
 **规划中（后续版本）**
 - 卷挂载查看、Snippets 变量替换、配置导入导出、闲置自动锁、本地终端、sudo 密码提示、MCP Server
 
-**明确不做**：K8s 全套、VM 运行时 / USB 透传 / x86 模拟、OrbStack UI 风格、团队协作（V2 再评估）
+**明确不做**：K8s 全套、独立 VM 运行时 / USB 透传 / x86 模拟（内置 Docker 引擎除外）、OrbStack UI 风格、团队协作（V2 再评估）
 
 ## 目录结构
 
@@ -73,7 +75,7 @@ DevDeck/
 │   └── src/
 │       ├── commands.rs    # Tauri invoke 命令（前端契约，80+ 命令）
 │       ├── services/      # ssh / docker / sftp / tunnel / stats / power / hostkey / macos_power
-│       │                  #   + auto_forward / compose / remote_docker / zmodem
+│       │                  #   + auto_forward / compose / remote_docker / zmodem / embedded(内置引擎)
 │       ├── infra/         # db (SQLite) / keychain
 │       ├── models.rs      # serde 契约模型（camelCase）
 │       └── tray.rs        # macOS 托盘
@@ -100,6 +102,7 @@ DevDeck/
 - [x] 隧道真实转发（Local/Remote/SOCKS5）+ 流量统计
 - [x] 事件驱动端口转发（auto_forward）
 - [x] 远程 Docker over SSH、Compose、ZMODEM
+- [x] **内置 Docker 引擎**：Lima(vz) + 真 dockerd，自动拉起/接入，设置页管理，托管 docker CLI（`embedded.rs` + `embedded_status/start/stop/reset` + 引擎探测接入）
 - [x] 自动更新（tauri-plugin-updater）+ Sentry + 公证/签名发布 CI + 能耗基线 CI
 - [x] i18n 中英双语
 - [x] 低功耗状态机、App Nap 豁免、托盘、Keychain、SQLite 持久化
@@ -113,9 +116,16 @@ cd frontend && pnpm install && pnpm dev
 
 # 桌面应用（需要 Rust toolchain）
 cd frontend && pnpm tauri dev
+
+# 内置 Docker 引擎（可选，一键）
+brew install lima
+# 首次打开应用后会自动初始化内置引擎；也可手动：
+#   limactl start --name=devdeck --tty=false --vm-type=vz --mount-type=virtiofs ~/.devdeck/engine/lima-docker.yaml
+#   export DOCKER_HOST=unix://~/.lima/devdeck/sock/docker.sock   # 终端使用 docker CLI
 ```
 
 - 前端开发不依赖 Rust：`lib/api.ts` 检测不到 Tauri 环境时自动回退 mock 数据流
+- 内置引擎：应用在启动后若无外部引擎（OrbStack 等）会自动 `ensure` 拉起内置 dockerd VM；设置页「内置 Docker 引擎」卡片可查看状态 / 启动 / 停止 / 重置；`~/.devdeck/bin/docker` 为托管 CLI，自动指向内置 socket
 - 命令契约：前端 `lib/api.ts` ↔ Rust `src-tauri/src/commands.rs` 需同步修改
 - 设计 token：仓库根 `DESIGN.md`（Google design.md 规范）
 - i18n：`frontend/src/lib/i18n/locales/{zh,en}.json`，面板长文案逐步迁移

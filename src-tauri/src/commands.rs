@@ -33,6 +33,8 @@ pub struct AppState {
     pub remote_docker: Arc<RemoteDockerManager>,
     /// ZMODEM file transfer over SSH
     pub zmodem: Arc<ZmodemManager>,
+    /// 内置 Docker 引擎（DevDeck 自管 Lima vz + dockerd，不依赖 OrbStack）
+    pub embedded: crate::services::embedded::EmbeddedEngine,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -274,6 +276,53 @@ pub async fn engines_list(state: State<'_, AppState>) -> CmdResult<Vec<DockerEng
     // ensure probe ran at least once
     state.docker.probe().await.map_err(|e| e.to_string())?;
     Ok(state.docker.list_engines().await)
+}
+
+// ---------------------------------------------------------------------------
+// embedded engine (内置 Docker 引擎 — Lima vz + dockerd)
+// ---------------------------------------------------------------------------
+#[tauri::command]
+pub async fn embedded_status(state: State<'_, AppState>) -> CmdResult<crate::services::embedded::EmbeddedStatus> {
+    Ok(state.embedded.status().await)
+}
+
+/// 启动/确保内置引擎（首次会初始化 VM 并下载镜像，可能较慢）。
+#[tauri::command]
+pub async fn embedded_start(state: State<'_, AppState>) -> CmdResult<crate::services::embedded::EmbeddedStatus> {
+    match state.embedded.ensure().await {
+        Ok(sock) => {
+            // 重新探测一次，让内置引擎立刻出现在引擎列表
+            let _ = state.docker.probe().await;
+            let mut st = state.embedded.status().await;
+            st.socket = Some(sock.display().to_string());
+            st.socket_exists = true;
+            st.engine_connected = state.docker.list_engines().await.iter().any(|e| e.id == crate::services::embedded::EMBEDDED_ENGINE_ID);
+            if st.engine_connected {
+                st.docker_version = Some("connected".to_string());
+                st.error = None;
+            }
+            Ok(st)
+        }
+        Err(e) => {
+            let mut st = state.embedded.status().await;
+            st.error = Some(e);
+            Ok(st)
+        }
+    }
+}
+
+/// 停止内置引擎 VM。
+#[tauri::command]
+pub async fn embedded_stop(state: State<'_, AppState>) -> CmdResult<crate::services::embedded::EmbeddedStatus> {
+    state.embedded.stop().await.map_err(|e| e.to_string())?;
+    Ok(state.embedded.status().await)
+}
+
+/// 删除内置引擎（重置，清空数据）。
+#[tauri::command]
+pub async fn embedded_reset(state: State<'_, AppState>) -> CmdResult<crate::services::embedded::EmbeddedStatus> {
+    state.embedded.reset().await.map_err(|e| e.to_string())?;
+    Ok(state.embedded.status().await)
 }
 
 // ---------------------------------------------------------------------------
