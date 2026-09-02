@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
   ArrowLeft,
@@ -6,7 +6,9 @@ import {
   Container,
   Cpu,
   HardDrive,
+  Loader2,
   MemoryStick,
+  RefreshCw,
   Terminal,
   Waypoints,
 } from "lucide-react";
@@ -14,9 +16,11 @@ import type { PanelProps } from "@/features/registry";
 import { useHosts, useHostProcesses, useHostStats, useHostStatsHistory, useTunnels } from "@/lib/queries";
 import { useLive } from "@/stores/live";
 import { useWorkspace } from "@/stores/workspace";
+import { invoke } from "@/lib/api";
 import { cn, formatBytes, formatDuration, formatPercent, timeAgo } from "@/lib/utils";
-import type { HostStatsHistoryPoint, Tunnel } from "@/lib/types";
+import type { Container as DockerContainer, HostStatsHistoryPoint, Tunnel } from "@/lib/types";
 import { EnvTag, EmptyState } from "@/components/shared";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -28,6 +32,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { toast } from "@/components/ui/sonner";
 
 /** ISO → HH:MM */
 function hhmm(iso: string): string {
@@ -136,6 +141,47 @@ export default function HostDetail({ onOpenPanel, hostId }: PanelProps & { hostI
   const { data: processes, isLoading: processesLoading } = useHostProcesses(hostId ?? null);
   const { hostOnline } = useLive();
   const { openTab } = useWorkspace();
+
+  // 远程 Docker over SSH：挂载 docker.sock 后列出远端容器
+  const [dockerMounted, setDockerMounted] = useState(false);
+  const [mounting, setMounting] = useState(false);
+  const [remoteContainers, setRemoteContainers] = useState<DockerContainer[] | null>(null);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+
+  const loadRemoteDocker = async (mount: boolean) => {
+    if (!hostId) return;
+    setMounting(true);
+    try {
+      if (mount) {
+        const res = await invoke<{ socketPath: string; connected: boolean }>("remote_docker_mount", {
+          hostId,
+        });
+        setDockerMounted(res.connected);
+      } else {
+        await invoke("remote_docker_unmount", { hostId });
+        setDockerMounted(false);
+        setRemoteContainers(null);
+      }
+      setMounting(false);
+      if (mount) void refreshRemoteContainers();
+    } catch (e) {
+      setMounting(false);
+      toast.error(mount ? "挂载远程 Docker 失败" : "卸载远程 Docker 失败", { description: String(e) });
+    }
+  };
+
+  const refreshRemoteContainers = async () => {
+    if (!hostId || !dockerMounted) return;
+    setRemoteLoading(true);
+    try {
+      const list = await invoke<DockerContainer[]>("remote_docker_containers", { hostId });
+      setRemoteContainers(list);
+    } catch (e) {
+      toast.error("获取远端容器列表失败", { description: String(e) });
+    } finally {
+      setRemoteLoading(false);
+    }
+  };
 
   const host = useMemo(() => (hostId ? hosts?.find((h) => h.id === hostId) : undefined), [hosts, hostId]);
 
@@ -277,15 +323,95 @@ export default function HostDetail({ onOpenPanel, hostId }: PanelProps & { hostI
             </div>
           </TabsContent>
 
-          {/* 容器 — V1.0 通过 SSH 隧道桥接远程 docker.sock */}
+          {/* 容器 — P2 远程 Docker over SSH（streamlocal 桥接远端 docker.sock） */}
           <TabsContent value="containers" className="mt-3">
-            <div className="rounded-lg border border-border-subtle bg-surface">
-              <EmptyState
-                icon={Container}
-                title="暂无容器数据"
-                description="通过 SSH 隧道桥接远程 docker.sock 获取容器列表（V1.0 实现）。"
-              />
+            <div className="mb-2 flex items-center gap-2">
+              {dockerMounted ? (
+                <>
+                  <Badge variant="neutral" className="bg-success-tint text-success">
+                    已挂载远端 docker.sock
+                  </Badge>
+                  <Button variant="ghost" size="sm" onClick={() => void refreshRemoteContainers()} disabled={remoteLoading}>
+                    <RefreshCw className={cn(remoteLoading && "animate-spin")} /> 刷新
+                  </Button>
+                  <Button variant="ghost" size="sm" className="text-quaternary" onClick={() => void loadRemoteDocker(false)} disabled={mounting}>
+                    卸载
+                  </Button>
+                </>
+              ) : (
+                <Button variant="secondary" size="sm" onClick={() => void loadRemoteDocker(true)} disabled={mounting}>
+                  {mounting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  <Container /> 挂载远程 Docker
+                </Button>
+              )}
+              {!dockerMounted && (
+                <span className="text-[11px] text-muted">需先建立该主机的 SSH 会话，经隧道桥接 /var/run/docker.sock</span>
+              )}
             </div>
+
+            {!dockerMounted ? (
+              <div className="rounded-lg border border-border-subtle bg-surface">
+                <EmptyState
+                  icon={Container}
+                  title="未挂载远程 Docker"
+                  description="点击「挂载远程 Docker」经 SSH 隧道桥接远端 docker.sock，即可查看该主机的容器列表（P2：远程 Docker over SSH）。"
+                />
+              </div>
+            ) : remoteLoading && !remoteContainers ? (
+              <div className="p-2">
+                {Array.from({ length: 4 }, (_, i) => (
+                  <Skeleton key={i} className="mb-2 h-9 w-full" />
+                ))}
+              </div>
+            ) : !remoteContainers || remoteContainers.length === 0 ? (
+              <div className="rounded-lg border border-border-subtle bg-surface">
+                <EmptyState icon={Container} title="该主机暂无容器" description="远程 Docker 已挂载，但主机上没有容器。" />
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[26%]">名称</TableHead>
+                      <TableHead className="w-[30%]">镜像</TableHead>
+                      <TableHead className="w-[18%]">状态</TableHead>
+                      <TableHead>端口</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {remoteContainers.map((c) => (
+                      <TableRow key={c.id}>
+                        <TableCell>
+                          <span className="max-w-[220px] truncate font-medium text-foreground" title={c.name}>
+                            {c.name}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <span className="mono-caption block max-w-[240px] truncate text-secondary" title={c.image}>
+                            {c.image}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <Badge
+                            variant="neutral"
+                            className={c.state === "running" ? "bg-success-tint text-success" : "bg-warning-tint text-warning"}
+                          >
+                            {c.state}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <span className="mono-caption text-muted">
+                            {c.ports?.length
+                              ? c.ports.map((p) => `${p.ip ?? "0.0.0.0"}:${p.publicPort ?? "?"}→${p.privatePort}`).join(", ")
+                              : "—"}
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
           </TabsContent>
 
           {/* 隧道 */}

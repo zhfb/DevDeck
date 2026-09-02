@@ -13,7 +13,8 @@ use tokio::sync::Mutex;
 use commands::{AppState, *};
 use infra::db::AppDb;
 use services::{
-    docker::DockerManager, hostkey::HostKeyResolver, hostkey::{ssh_host_key_decide, ssh_known_hosts_forget},
+    auto_forward::AutoForwardManager, compose::ComposeManager, docker::DockerManager, hostkey::HostKeyResolver, hostkey::{ssh_host_key_decide, ssh_known_hosts_forget},
+    remote_docker::RemoteDockerManager, zmodem::ZmodemManager,
     power::PowerManager, ssh::SshManager, stats::StatsCollector, tunnel::TunnelManager,
     sftp::SftpManager,
 };
@@ -28,7 +29,25 @@ pub fn run() {
         .with_target(false)
         .init();
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build());
+
+    // Sentry crash reporting (P1) — only activates when DEVDDECK_SENTRY_DSN
+    // is set, so dev builds stay dependency-free at runtime. Release CI
+    // passes the DSN via env.
+    if let Ok(dsn) = std::env::var("DEVDDECK_SENTRY_DSN") {
+        if !dsn.is_empty() {
+            let mut opts = sentry::ClientOptions::default();
+            opts.release = sentry::release_name!();
+            opts.environment = Some(
+                (if cfg!(debug_assertions) { "development" } else { "production" }).into(),
+            );
+            let client = sentry::init((dsn, opts));
+            builder = builder.plugin(tauri_plugin_sentry::init(&client));
+        }
+    }
+
+    builder
         .setup(|app| {
             // macOS dev 模式：显式设置 Dock 应用图标（dev 二进制无 bundle，Tauri 默认图标是黑底 exec）
             #[cfg(all(dev, target_os = "macos"))]
@@ -70,6 +89,10 @@ pub fn run() {
             let power = PowerManager::new();
             let tunnels = Arc::new(TunnelManager::new(db.clone(), ssh.clone()));
             let sftp = Arc::new(SftpManager::new(ssh.clone()));
+            let auto_forward = Arc::new(AutoForwardManager::new(db.clone(), docker.clone(), tunnels.clone()));
+            let compose = Arc::new(ComposeManager::new(ssh.clone()));
+            let remote_docker = Arc::new(RemoteDockerManager::new(ssh.clone()));
+            let zmodem = Arc::new(ZmodemManager::new(ssh.clone()));
 
             // Adaptive no-agent monitoring: SSH keepalive and active tunnels
             // remain independent; only optional stats sampling is throttled.
@@ -98,6 +121,7 @@ pub fn run() {
             let docker_bg = docker.clone();
             let app_bg = app_handle.clone();
             let power_bg = power.clone();
+            let auto_forward_bg = auto_forward.clone();
             tauri::async_runtime::spawn(async move {
                 // probe local engines on startup
                 let engines = match docker_bg.probe().await {
@@ -114,8 +138,15 @@ pub fn run() {
                     let docker = docker_bg.clone();
                     let app = app_bg.clone();
                     let power = power_bg.clone();
+                    let engine_id = engine.id.clone();
                     tauri::async_runtime::spawn(async move {
-                        let _ = docker.run_event_forwarding(app, &engine.id, power).await;
+                        let _ = docker.run_event_forwarding(app, &engine_id, power).await;
+                    });
+                    // event-driven port forwarding watcher (enabled at runtime
+                    // via auto_forward_set; idle-poll while disabled)
+                    let af = auto_forward_bg.clone();
+                    tauri::async_runtime::spawn(async move {
+                        af.run(engine.id.clone()).await;
                     });
                 }
             });
@@ -129,6 +160,10 @@ pub fn run() {
                 sftp,
                 tunnels,
                 hostkey,
+                auto_forward,
+                compose,
+                remote_docker,
+                zmodem,
             });
 
             // macOS 系统托盘（menu bar）—— P0
@@ -142,6 +177,8 @@ pub fn run() {
             app_info,
             power_state_get,
             power_state_set,
+            updater_check,
+            updater_install,
             sftp_list,
             sftp_mkdir,
             sftp_remove,
@@ -192,6 +229,19 @@ pub fn run() {
             ssh_sessions,
             ssh_host_key_decide,
             ssh_known_hosts_forget,
+            ssh_auth_respond,
+            ssh_broadcast,
+            auto_forward_set,
+            auto_forward_get,
+            compose_run,
+            compose_ps,
+            remote_docker_mount,
+            remote_docker_unmount,
+            remote_docker_list_mounts,
+            remote_docker_containers,
+            remote_docker_images,
+            zmodem_upload,
+            zmodem_download,
             term_input,
             term_resize,
         ])

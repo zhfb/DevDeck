@@ -347,7 +347,37 @@ export const mockHandlers: Record<string, (a: any) => unknown> = {
   "tunnels.list": async () => mockTunnels,
   "tunnels.get": async ({ id }: { id: string }) => mockTunnels.find((t) => t.id === id) ?? null,
   "ssh.sessions": async () => [] as SshSession[],
+  "ssh_auth_respond": async () => ({ ok: true }),
+  "ssh_broadcast": async ({ sessionIds }: { sessionIds: string[] }) => sessionIds.length,
+  "auto_forward_set": async () => ({ ok: true }),
+  "auto_forward_get": async () => null,
+  "compose_run": async ({ args }: { args: string[] }) =>
+    `mock: docker compose ${args.join(" ")}\n[+] Running 0/0\n ✔ Container demo  Started\n`,
+  "compose_ps": async () => [
+    { name: "web", state: "running", status: "Up 3 minutes" },
+    { name: "db", state: "running", status: "Up 3 minutes" },
+    { name: "redis", state: "exited", status: "Exited (0) 2 minutes ago" },
+  ],
+  "remote_docker_mount": async ({ hostId }: { hostId: string }) => ({
+    hostId,
+    socketPath: `/tmp/devdeck-docker-${hostId}.sock`,
+    connected: true,
+  }),
+  "remote_docker_unmount": async () => ({ ok: true }),
+  "remote_docker_list_mounts": async () => [] as { hostId: string; socketPath: string; connected: boolean }[],
+  "remote_docker_containers": async ({ hostId }: { hostId: string }) =>
+    mockContainers.map((c) => ({ ...c, engineId: `ssh:${hostId}` })),
+  "remote_docker_images": async ({ hostId }: { hostId: string }) =>
+    mockImages.map((i) => ({ ...i, engineId: `ssh:${hostId}` })),
   "app.info": async () => ({ version: "0.1.0", backend: "mock", platform: navigator.platform }),
+  "updater_check": async () => ({
+    available: false,
+    currentVersion: "0.1.0",
+    version: "0.1.0",
+    notes: null,
+    downloadUrl: null,
+  }),
+  "updater_install": async () => "已是最新版本（mock）",
   "power_state_get": async () => ({
     state: "active",
     policy: { statsIntervalSecs: 5, renderEvents: true, keepConnections: true },

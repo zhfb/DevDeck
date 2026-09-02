@@ -1,0 +1,56 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "hosts": "Hosts",
+    "sftp": "SFTP",
+    "containers": "Containers",
+    "images": "Images",
+    "volumes": "Volumes",
+    "networks": "Networks",
+    "snippets": "Snippets",
+    "tunnels": "Tunnels",
+    "compose": "Compose",
+    "monitor": "Monitor",
+    "tasks": "Tasks",
+    "settings": "Settings"
+  },
+  "panel": {
+    "dashboard": "Dashboard",
+    "hosts": "SSH Hosts",
+    "sftp": "SFTP",
+    "containers": "Containers",
+    "images": "Images",
+    "volumes": "Volumes",
+    "networks": "Networks",
+    "snippets": "Command Snippets",
+    "tunnels": "Tunnels",
+    "compose": "Compose",
+    "monitor": "Monitor",
+    "tasks": "Tasks",
+    "settings": "Settings"
+  },
+  "common": {
+    "cancel": "Cancel",
+    "save": "Save",
+    "delete": "Delete",
+    "refresh": "Refresh",
+    "connect": "Connect",
+    "connecting": "Connecting…",
+    "search": "Search",
+    "name": "Name",
+    "status": "Status",
+    "type": "Type",
+    "actions": "Actions",
+    "active": "Active",
+    "stopped": "Stopped",
+    "running": "Running",
+    "error": "Error",
+    "online": "Online",
+    "offline": "Offline"
+  },
+  "settings": {
+    "title": "Settings",
+    "language": "Language",
+    "languageHint": "Applies immediately and is stored locally"
+  }
+}

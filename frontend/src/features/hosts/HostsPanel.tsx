@@ -96,6 +96,9 @@ interface HostForm {
   groupId: string;
   auth: string;
   password: string;
+  jumpHost: string;
+  jumpPort: string;
+  jumpUser: string;
 }
 
 const emptyForm: HostForm = {
@@ -106,6 +109,9 @@ const emptyForm: HostForm = {
   groupId: "",
   auth: "password",
   password: "",
+  jumpHost: "",
+  jumpPort: "22",
+  jumpUser: "",
 };
 
 /**
@@ -158,6 +164,9 @@ export default function HostsPanel(_props: PanelProps) {
           credentialRef: null,
           fingerprint: null,
           lastConnectedAt: null,
+          jumpHost: form.jumpHost.trim() || null,
+          jumpPort: form.jumpHost.trim() ? Number(form.jumpPort) || 22 : null,
+          jumpUser: form.jumpHost.trim() ? form.jumpUser.trim() || null : null,
           createdAt: new Date().toISOString(),
         },
         password: form.auth === "password" && form.password ? form.password : null,
@@ -349,6 +358,41 @@ export default function HostsPanel(_props: PanelProps) {
                 />
               </div>
             )}
+            {/* 跳板机（P2）：目标主机经跳板机转发，无需外部 ssh 二进制 */}
+            <div className="col-span-2 space-y-1.5 rounded-md border border-border-subtle bg-hover-fill/50 p-2.5">
+              <Label htmlFor="host-jump" className="text-[12px]">
+                跳板机（可选 · ProxyJump）
+              </Label>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="col-span-2 space-y-1">
+                  <Input
+                    id="host-jump"
+                    value={form.jumpHost}
+                    onChange={(e) => set("jumpHost")(e.target.value)}
+                    placeholder="bastion.example.com"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={form.jumpPort}
+                    onChange={(e) => set("jumpPort")(e.target.value)}
+                    placeholder="22"
+                  />
+                </div>
+              </div>
+              <Input
+                value={form.jumpUser}
+                onChange={(e) => set("jumpUser")(e.target.value)}
+                placeholder="跳板机用户名（默认同目标用户名）"
+                className="text-[12px]"
+              />
+              <p className="text-[11px] text-muted">
+                连接时先连跳板机，再经其 direct-tcpip 通道转发到目标主机；跳板认证复用 ssh-agent / 默认密钥。
+              </p>
+            </div>
           </form>
           <DialogFooter>
             <Button variant="secondary" size="md" onClick={() => setAddOpen(false)}>

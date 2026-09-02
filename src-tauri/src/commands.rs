@@ -10,6 +10,9 @@ use crate::models::*;
 use crate::services::{
     docker::DockerManager, hostkey::HostKeyResolver, ssh::SshManager, stats::StatsCollector,
     power::{PowerManager, PowerState}, sftp::{SftpManager, TransferDirection, TransferSpec}, tunnel::TunnelManager,
+    auto_forward::AutoForwardManager, compose::{ComposeManager, ComposeService},
+    remote_docker::{RemoteDockerManager, RemoteDockerMount},
+    zmodem::ZmodemManager,
 };
 
 pub struct AppState {
@@ -22,6 +25,14 @@ pub struct AppState {
     pub tunnels: Arc<TunnelManager>,
     /// known_hosts TOFU — resolves pending `ssh:host-key-verify` prompts
     pub hostkey: Arc<HostKeyResolver>,
+    /// event-driven port forwarding
+    pub auto_forward: Arc<AutoForwardManager>,
+    /// docker compose via SSH exec
+    pub compose: Arc<ComposeManager>,
+    /// remote Docker over SSH (streamlocal bridge to docker.sock)
+    pub remote_docker: Arc<RemoteDockerManager>,
+    /// ZMODEM file transfer over SSH
+    pub zmodem: Arc<ZmodemManager>,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -29,6 +40,59 @@ type CmdResult<T> = Result<T, String>;
 // ---------------------------------------------------------------------------
 // app
 // ---------------------------------------------------------------------------
+
+/// 自动更新检查结果（P2：tauri-plugin-updater）
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    pub available: bool,
+    pub current_version: String,
+    pub version: String,
+    pub notes: Option<String>,
+    pub download_url: Option<String>,
+}
+
+#[tauri::command]
+pub async fn updater_check(app: AppHandle) -> CmdResult<UpdateInfo> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let current_version = app.package_info().version.to_string();
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(u) => Ok(UpdateInfo {
+            available: true,
+            current_version,
+            version: u.version.clone(),
+            notes: u.body.clone(),
+            download_url: Some(u.download_url.to_string()),
+        }),
+        None => Ok(UpdateInfo {
+            available: false,
+            current_version: current_version.clone(),
+            version: current_version,
+            notes: None,
+            download_url: None,
+        }),
+    }
+}
+
+#[tauri::command]
+pub async fn updater_install(app: AppHandle) -> CmdResult<String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(update) => {
+            update
+                .download_and_install(
+                    |_, _| {},
+                    || {},
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(format!("已下载并安装更新 v{}，请重启应用生效", update.version))
+        }
+        None => Ok("已是最新版本".to_string()),
+    }
+}
 #[tauri::command]
 pub async fn app_info() -> CmdResult<AppInfo> {
     Ok(AppInfo {
@@ -557,6 +621,136 @@ pub async fn tunnels_stop(state: State<'_, AppState>, id: String) -> CmdResult<(
     state.tunnels.stop(&id).await.map_err(|e| e.to_string())
 }
 
+// event-driven port forwarding
+#[tauri::command]
+pub async fn auto_forward_set(
+    state: State<'_, AppState>,
+    engine_id: String,
+    host_id: Option<String>,
+) -> CmdResult<()> {
+    state
+        .auto_forward
+        .set(&engine_id, host_id.as_deref())
+        .await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn auto_forward_get(
+    state: State<'_, AppState>,
+    engine_id: String,
+) -> CmdResult<Option<String>> {
+    Ok(state.auto_forward.get(&engine_id).await)
+}
+
+// docker compose (P1)
+#[tauri::command]
+pub async fn compose_run(
+    state: State<'_, AppState>,
+    host_id: String,
+    dir: Option<String>,
+    file: Option<String>,
+    args: Vec<String>,
+) -> CmdResult<String> {
+    state
+        .compose
+        .run(&host_id, dir.as_deref(), file.as_deref(), &args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn compose_ps(
+    state: State<'_, AppState>,
+    host_id: String,
+    dir: Option<String>,
+    file: Option<String>,
+) -> CmdResult<Vec<ComposeService>> {
+    state
+        .compose
+        .ps(&host_id, dir.as_deref(), file.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// remote docker over SSH (streamlocal bridge to docker.sock)
+// ---------------------------------------------------------------------------
+#[tauri::command]
+pub async fn remote_docker_mount(
+    state: State<'_, AppState>,
+    host_id: String,
+) -> CmdResult<RemoteDockerMount> {
+    state.remote_docker.mount(&host_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn remote_docker_unmount(state: State<'_, AppState>, host_id: String) -> CmdResult<()> {
+    state.remote_docker.unmount(&host_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn remote_docker_list_mounts(
+    state: State<'_, AppState>,
+) -> CmdResult<Vec<RemoteDockerMount>> {
+    Ok(state.remote_docker.list_mounts().await)
+}
+
+#[tauri::command]
+pub async fn remote_docker_containers(
+    state: State<'_, AppState>,
+    host_id: String,
+) -> CmdResult<Vec<Container>> {
+    state
+        .remote_docker
+        .list_containers(&host_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn remote_docker_images(
+    state: State<'_, AppState>,
+    host_id: String,
+) -> CmdResult<Vec<DockerImage>> {
+    state
+        .remote_docker
+        .list_images(&host_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// ZMODEM file transfer
+// ---------------------------------------------------------------------------
+#[tauri::command]
+pub async fn zmodem_upload(
+    state: State<'_, AppState>,
+    host_id: String,
+    local_path: String,
+    remote_dir: String,
+) -> CmdResult<String> {
+    state
+        .zmodem
+        .upload(&host_id, &local_path, &remote_dir)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn zmodem_download(
+    state: State<'_, AppState>,
+    host_id: String,
+    remote_path: String,
+    local_dir: String,
+) -> CmdResult<String> {
+    state
+        .zmodem
+        .download(&host_id, &remote_path, &local_dir)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // ssh
 // ---------------------------------------------------------------------------
@@ -646,4 +840,31 @@ pub async fn ssh_disconnect(state: State<'_, AppState>, session_id: String) -> C
 #[tauri::command]
 pub async fn ssh_sessions(state: State<'_, AppState>) -> CmdResult<Vec<SshSession>> {
     Ok(state.ssh.list_sessions().await)
+}
+
+#[tauri::command]
+pub async fn ssh_auth_respond(
+    state: State<'_, AppState>,
+    prompt_id: String,
+    answers: Vec<String>,
+) -> CmdResult<()> {
+    state
+        .ssh
+        .resolve_auth(&prompt_id, answers)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 广播终端：把输入写入多个已连接会话的 PTY。
+#[tauri::command]
+pub async fn ssh_broadcast(
+    state: State<'_, AppState>,
+    session_ids: Vec<String>,
+    data: String,
+) -> CmdResult<usize> {
+    state
+        .ssh
+        .broadcast(&session_ids, data.as_bytes())
+        .await
+        .map_err(|e| e.to_string())
 }

@@ -12,14 +12,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::{mpsc, Mutex};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tauri::{AppHandle, Emitter};
 
 use crate::models::{Host, SshSession};
 use crate::services::hostkey::HostKeyResolver;
 
-use russh::client::{AuthResult, Config, DisconnectReason, Handle, Handler};
+use russh::client::{AuthResult, Config, DisconnectReason, Handle, Handler, KeyboardInteractiveAuthResponse};
 use russh::keys::PublicKey;
 use russh::{ChannelMsg, Disconnect};
 use russh_sftp::client::SftpSession;
@@ -42,6 +42,8 @@ pub enum SshError {
     HostNotFound(String),
     #[error("session not found: {0}")]
     SessionNotFound(String),
+    #[error("io error: {0}")]
+    Io(String),
 }
 
 impl From<russh::Error> for SshError {
@@ -121,6 +123,76 @@ impl Handler for SessionHandler {
     }
 }
 
+/// Minimal client handler for the jump (bastion) hop. TOFU-verifies the jump
+/// host's key via the same resolver used for target hosts.
+#[derive(Clone)]
+struct JumpHandler {
+    hostkey: HostKeyResolver,
+    host: String,
+    port: u16,
+}
+
+impl Handler for JumpHandler {
+    type Error = SshError;
+
+    async fn check_server_key(&mut self, key: &PublicKey) -> Result<bool, Self::Error> {
+        self.hostkey
+            .verify(&self.host, self.port, key)
+            .await
+            .map_err(SshError::Connect)
+    }
+}
+
+/// Wraps a direct-tcpip channel stream opened on the jump connection and keeps
+/// the jump connection's `Handle` alive for exactly as long as the transport.
+/// When the target connection drops this stream, the jump handle drops too and
+/// the bastion hop closes cleanly.
+struct JumpStream<R> {
+    inner: R,
+    _jump: Handle<JumpHandler>,
+}
+
+impl<R: AsyncRead + AsyncWrite + Unpin> AsyncRead for JumpStream<R> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl<R: AsyncRead + AsyncWrite + Unpin> AsyncWrite for JumpStream<R> {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+/// 共享 SSH 连接句柄：同一主机的多个终端 Tab 复用同一条传输（会话复用）。
+type SharedHandle = Arc<tokio::sync::Mutex<Handle<SessionHandler>>>;
+
+/// 主机级连接池条目：持有传输句柄与挂接的会话集合。
+struct PoolEntry {
+    slot: SharedHandle,
+    sessions: std::collections::HashSet<String>,
+}
+
 pub struct SshManager {
     app: AppHandle,
     /// known_hosts TOFU resolver (shared with the AppState so the
@@ -128,10 +200,15 @@ pub struct SshManager {
     hostkey: HostKeyResolver,
     /// session_id → input channel into the PTY reader task
     ptys: Mutex<HashMap<String, mpsc::UnboundedSender<PtyCmd>>>,
-    /// session_id → client handle (for exec / disconnect)
-    handles: Mutex<HashMap<String, Handle<SessionHandler>>>,
+    /// session_id → client handle (for exec / disconnect)。
+    /// 复用同一条 SSH 传输时，多个 session 共享同一个 slot。
+    handles: Mutex<HashMap<String, SharedHandle>>,
     host_by_session: Mutex<HashMap<String, String>>,
+    /// host_id → 连接池（会话复用：多 Tab 共享同一 SSH 连接）
+    pool: Mutex<HashMap<String, PoolEntry>>,
     remote_forwards: Arc<Mutex<HashMap<String, RemoteForwardTarget>>>,
+    /// prompt_id → channel to resolve a pending keyboard-interactive (TOTP) prompt
+    pending_auth: Mutex<HashMap<String, oneshot::Sender<Vec<String>>>>,
 }
 
 impl SshManager {
@@ -142,15 +219,21 @@ impl SshManager {
             ptys: Mutex::new(HashMap::new()),
             handles: Mutex::new(HashMap::new()),
             host_by_session: Mutex::new(HashMap::new()),
+            pool: Mutex::new(HashMap::new()),
             remote_forwards: Arc::new(Mutex::new(HashMap::new())),
+            pending_auth: Mutex::new(HashMap::new()),
         }
     }
 
     pub async fn open_sftp(&self, session_id: &str) -> Result<SftpSession, SshError> {
-        let mut handles = self.handles.lock().await;
-        let handle = handles
-            .get_mut(session_id)
+        let slot = self
+            .handles
+            .lock()
+            .await
+            .get(session_id)
+            .cloned()
             .ok_or_else(|| SshError::SessionNotFound(session_id.to_string()))?;
+        let handle = slot.lock().await;
         let channel = handle
             .channel_open_session()
             .await
@@ -162,11 +245,12 @@ impl SshManager {
         let session = SftpSession::new(channel.into_stream())
             .await
             .map_err(|e| SshError::Channel(format!("start sftp session: {e}")))?;
-        drop(handles);
+        drop(handle);
         Ok(session)
     }
 
     async fn authenticate(
+        &self,
         client: &mut Handle<SessionHandler>,
         host: &Host,
         password: Option<&str>,
@@ -177,29 +261,120 @@ impl SshManager {
         }
         // 2) try public key auth with default ~/.ssh keys (G5 — keychain
         //    private keys arrive in a later pass)
-        if Self::auth_with_keys(client, host).await? {
+        if Self::auth_with_keys(client, &host.user, &host.address, host.port).await? {
             return Ok(true);
         }
-        // 2) password auth
+        // 3) password auth
         match password {
-            Some(pw) => Ok(matches!(
-                client
-                    .authenticate_password(&host.user, pw)
-                    .await
-                    .map_err(|e| SshError::Auth(e.to_string()))?,
-                AuthResult::Success
-            )),
-            None => Ok(matches!(
-                client
-                    .authenticate_none(&host.user)
-                    .await
-                    .map_err(|e| SshError::Auth(e.to_string()))?,
-                AuthResult::Success
-            )),
+            Some(pw) => {
+                if matches!(
+                    client
+                        .authenticate_password(&host.user, pw)
+                        .await
+                        .map_err(|e| SshError::Auth(e.to_string()))?,
+                    AuthResult::Success
+                ) {
+                    return Ok(true);
+                }
+            }
+            None => {
+                if matches!(
+                    client
+                        .authenticate_none(&host.user)
+                        .await
+                        .map_err(|e| SshError::Auth(e.to_string()))?,
+                    AuthResult::Success
+                ) {
+                    return Ok(true);
+                }
+            }
+        }
+        // 4) keyboard-interactive (TOTP 2FA / challenge-response) — commonly
+        //    used for password+TOTP servers (e.g. Google Authenticator PAM).
+        self.auth_keyboard_interactive(client, host).await
+    }
+
+    /// Keyboard-interactive authentication with user prompts bridged to the
+    /// frontend via `ssh:auth-request` and resolved by `ssh_auth_respond`.
+    async fn auth_keyboard_interactive(
+        &self,
+        client: &mut Handle<SessionHandler>,
+        host: &Host,
+    ) -> Result<bool, SshError> {
+        loop {
+            match client
+                .authenticate_keyboard_interactive_start(&host.user, None)
+                .await
+            {
+                Ok(KeyboardInteractiveAuthResponse::Success) => return Ok(true),
+                Ok(KeyboardInteractiveAuthResponse::Failure { .. }) => return Ok(false),
+                Ok(KeyboardInteractiveAuthResponse::InfoRequest { name, instructions, prompts }) => {
+                    let prompt_id = uuid::Uuid::new_v4().simple().to_string();
+                    let (tx, rx) = oneshot::channel();
+                    self.pending_auth.lock().await.insert(prompt_id.clone(), tx);
+                    let _ = self.app.emit(
+                        "ssh:auth-request",
+                        serde_json::json!({
+                            "promptId": prompt_id,
+                            "hostId": host.id,
+                            "name": name,
+                            "instructions": instructions,
+                            "prompts": prompts.iter().map(|p| p.prompt.clone()).collect::<Vec<_>>(),
+                            "echo": prompts.iter().any(|p| p.echo),
+                        }),
+                    );
+                    let answers = match tokio::time::timeout(std::time::Duration::from_secs(120), rx)
+                        .await
+                    {
+                        Ok(Ok(answers)) => answers,
+                        _ => {
+                            self.pending_auth.lock().await.remove(&prompt_id);
+                            return Err(SshError::Auth(
+                                "二次验证码（TOTP）输入超时（120 秒）".to_string(),
+                            ));
+                        }
+                    };
+                    match client.authenticate_keyboard_interactive_respond(answers).await {
+                        Ok(KeyboardInteractiveAuthResponse::Success) => return Ok(true),
+                        Ok(KeyboardInteractiveAuthResponse::InfoRequest { .. }) => continue,
+                        _ => return Ok(false),
+                    }
+                }
+                Err(e) => return Err(SshError::Auth(format!("keyboard-interactive auth: {e}"))),
+            }
         }
     }
 
-    async fn auth_with_agent(client: &mut Handle<SessionHandler>, user: &str) -> Result<bool, SshError> {
+    /// Resolve a pending keyboard-interactive (TOTP) prompt from the frontend.
+    pub async fn resolve_auth(&self, prompt_id: &str, answers: Vec<String>) -> Result<(), SshError> {
+        let tx = self
+            .pending_auth
+            .lock()
+            .await
+            .remove(prompt_id)
+            .ok_or_else(|| SshError::Auth("prompt not found or expired".to_string()))?;
+        let _ = tx.send(answers);
+        Ok(())
+    }
+
+    /// 广播终端（P1）：把同一段输入写入多个会话的 PTY。
+    pub async fn broadcast(&self, session_ids: &[String], data: &[u8]) -> Result<usize, SshError> {
+        let ptys = self.ptys.lock().await;
+        let mut sent = 0usize;
+        for sid in session_ids {
+            if let Some(tx) = ptys.get(sid) {
+                if tx.send(PtyCmd::Data(data.to_vec())).is_ok() {
+                    sent += 1;
+                }
+            }
+        }
+        Ok(sent)
+    }
+
+    async fn auth_with_agent<H: Handler>(
+        client: &mut Handle<H>,
+        user: &str,
+    ) -> Result<bool, SshError> {
         let Some(socket) = std::env::var_os("SSH_AUTH_SOCK") else { return Ok(false); };
         let stream = match tokio::net::UnixStream::connect(socket).await {
             Ok(stream) => stream,
@@ -219,9 +394,11 @@ impl SshManager {
 
     /// Try `~/.ssh/id_ed25519` / `id_ecdsa` / `id_rsa` (unencrypted) as the
     /// authentication identity. Returns true on first success.
-    async fn auth_with_keys(
-        client: &mut Handle<SessionHandler>,
-        host: &Host,
+    async fn auth_with_keys<H: Handler>(
+        client: &mut Handle<H>,
+        user: &str,
+        address: &str,
+        port: u16,
     ) -> Result<bool, SshError> {
         use russh::keys::decode_secret_key;
         use russh::keys::PrivateKeyWithHashAlg;
@@ -239,7 +416,7 @@ impl SshManager {
                 continue;
             };
             let key = PrivateKeyWithHashAlg::new(std::sync::Arc::new(key), None);
-            match client.authenticate_publickey(&host.user, key).await {
+            match client.authenticate_publickey(user, key).await {
                 Ok(AuthResult::Success) => {
                     tracing::info!(path = %path.display(), "public key auth ok");
                     return Ok(true);
@@ -251,11 +428,11 @@ impl SshManager {
                 }
             }
         }
-        let account = crate::infra::keychain::account_for(&host.user, &host.address, host.port);
+        let account = crate::infra::keychain::account_for(user, address, port);
         if let Ok(pem) = crate::infra::keychain::load_private_key(&account) {
             if let Ok(key) = decode_secret_key(&pem, None) {
                 let key = PrivateKeyWithHashAlg::new(std::sync::Arc::new(key), None);
-                if matches!(client.authenticate_publickey(&host.user, key).await, Ok(AuthResult::Success)) {
+                if matches!(client.authenticate_publickey(user, key).await, Ok(AuthResult::Success)) {
                     return Ok(true);
                 }
             }
@@ -282,7 +459,6 @@ impl SshManager {
             remote_forwards: self.remote_forwards.clone(),
         };
 
-        let addr = format!("{}:{}", host.address, host.port);
         let mut config = Config::default();
         // keepalive every 15s → network drop is detected within ~30-45s and
         // the session's `disconnected` event fires so the frontend can
@@ -291,30 +467,15 @@ impl SshManager {
         config.keepalive_interval = Some(std::time::Duration::from_secs(15));
         let config = Arc::new(config);
 
-        // Bound the TCP connect: russh connect() has NO timeout of its own —
-        // an unreachable host would hang the command for ~75s and the UI
-        // looks frozen. Mirrors r-shell's pattern. (10s)
-        tracing::info!(host = %host.address, port = host.port, "ssh: tcp connect (10s)");
-        let stream = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            tokio::net::TcpStream::connect(addr.as_str()),
-        )
-        .await
-        .map_err(|_| {
-            SshError::Connect(format!(
-                "连接超时：{}:{} 无响应（10 秒），请检查主机地址、网络或防火墙",
-                host.address, host.port
-            ))
-        })?
-        .map_err(|e| SshError::Connect(e.to_string()))?;
-
-        // SSH handshake may block on the known_hosts TOFU prompt (120s
-        // window), so its timeout must be larger than that — not the 10s
-        // TCP budget. Unreachable hosts already failed fast above.
-        tracing::info!(host = %host.address, "ssh: handshake (tcp ok; up to 130s for host-key TOFU)");
+        tracing::info!(
+            host = %host.address,
+            port = host.port,
+            jump = host.jump_host.as_deref().unwrap_or("-"),
+            "ssh: establish transport (direct or via jump)"
+        );
         let mut client = tokio::time::timeout(
             std::time::Duration::from_secs(130),
-            russh::client::connect_stream(config, stream, handler),
+            self.open_transport(host, config, handler),
         )
         .await
         .map_err(|_| {
@@ -327,7 +488,7 @@ impl SshManager {
         tracing::info!(host = %host.address, "ssh: handshake ok, authenticating (10s)");
         let authenticated = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            Self::authenticate(&mut client, host, password),
+            self.authenticate(&mut client, host, password),
         )
         .await
         .map_err(|_| {
@@ -355,6 +516,90 @@ impl SshManager {
         Ok((client, session))
     }
 
+    /// Establish the SSH transport to `host`. When the host is reachable only
+    /// through a jump (bastion) host, the target connection is tunnelled over
+    /// a direct-tcpip channel opened on the jump connection — application-level
+    /// ProxyJump, no external ssh binary required.
+    async fn open_transport(
+        &self,
+        host: &Host,
+        config: Arc<Config>,
+        handler: SessionHandler,
+    ) -> Result<Handle<SessionHandler>, SshError> {
+        let Some(jump) = host.jump_host.clone() else {
+            // direct path: bound TCP connect (unreachable host fails fast, 10s)
+            tracing::info!(host = %host.address, port = host.port, "ssh: tcp connect (10s)");
+            return self
+                .connect_tcp(&host.address, host.port, config, handler)
+                .await;
+        };
+
+        // --- jump (bastion) path ---
+        let jump_port = host.jump_port.unwrap_or(22);
+        let jump_user = host
+            .jump_user
+            .clone()
+            .unwrap_or_else(|| host.user.clone());
+        tracing::info!(jump = %jump, jump_port, "ssh: connecting via jump host");
+        let jump_handler = JumpHandler {
+            hostkey: self.hostkey.clone(),
+            host: jump.clone(),
+            port: jump_port,
+        };
+        let mut jump_client = self
+            .connect_tcp(&jump, jump_port, config.clone(), jump_handler)
+            .await
+            .map_err(|e| {
+                SshError::Connect(format!("跳板机 {jump}:{jump_port} 连接失败：{e}"))
+            })?;
+        // authenticate the bastion hop with the same identity as the target
+        if !Self::auth_with_agent(&mut jump_client, &jump_user).await? {
+            Self::auth_with_keys(&mut jump_client, &jump_user, &jump, jump_port).await?;
+        }
+        tracing::info!(jump = %jump, "ssh: jump authenticated, opening direct-tcpip to target");
+        let channel = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            jump_client.channel_open_direct_tcpip(&host.address, host.port as u32, "localhost", 0u32),
+        )
+        .await
+        .map_err(|_| SshError::Connect("跳板机转发通道超时（20 秒）".to_string()))?
+        .map_err(|e| SshError::Connect(format!("跳板机打开目标通道失败：{e}")))?;
+        let stream = JumpStream {
+            inner: channel.into_stream(),
+            _jump: jump_client,
+        };
+        tracing::info!(target = %host.address, "ssh: jump channel open, handshake target");
+        russh::client::connect_stream(config, stream, handler)
+            .await
+            .map_err(|e| SshError::Connect(e.to_string()))
+    }
+
+    /// TCP-connect with a 10s budget, then run the SSH handshake over it.
+    async fn connect_tcp<H: Handler<Error = SshError> + Send + 'static>(
+        &self,
+        host: &str,
+        port: u16,
+        config: Arc<Config>,
+        handler: H,
+    ) -> Result<Handle<H>, SshError> {
+        let addr = format!("{host}:{port}");
+        let stream = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::net::TcpStream::connect(addr.as_str()),
+        )
+        .await
+        .map_err(|_| {
+            SshError::Connect(format!(
+                "连接超时：{} 无响应（10 秒），请检查主机地址、网络或防火墙",
+                addr
+            ))
+        })?
+        .map_err(|e| SshError::Connect(e.to_string()))?;
+        russh::client::connect_stream(config, stream, handler)
+            .await
+            .map_err(|e| SshError::Connect(e.to_string()))
+    }
+
     /// Connect and open an interactive PTY shell, wiring the data bridge.
     pub async fn connect_pty(
         &self,
@@ -379,6 +624,8 @@ impl SshManager {
         // drop any stale reader-task mappings for this session id
         self.ptys.lock().await.remove(session_id);
         self.handles.lock().await.remove(session_id);
+        // 若原传输已失效，重置连接池，让重连建立一条全新传输
+        self.pool.lock().await.remove(&host.id);
 
         // credentials: Keychain only — there is no user typing on reconnect
         let password = host
@@ -398,9 +645,46 @@ impl SshManager {
         rows: u32,
         session_id: Option<String>,
     ) -> Result<SshSession, SshError> {
-        let (client, session) = self.connect_inner(host, password, session_id).await?;
-        let session_id = session.session_id.clone();
+        let session_id = session_id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+        let title = format!("{}@{}", host.user, host.address);
 
+        // 会话复用：同一主机已有共享连接则复用，否则新建一条传输并加入连接池。
+        let slot = {
+            let mut pool = self.pool.lock().await;
+            if let Some(entry) = pool.get_mut(&host.id) {
+                entry.sessions.insert(session_id.clone());
+                entry.slot.clone()
+            } else {
+                let (client, _) = self
+                    .connect_inner(host, password, Some(session_id.clone()))
+                    .await?;
+                let slot: SharedHandle = Arc::new(Mutex::new(client));
+                pool.insert(
+                    host.id.clone(),
+                    PoolEntry {
+                        slot: slot.clone(),
+                        sessions: std::collections::HashSet::from([session_id.clone()]),
+                    },
+                );
+                slot
+            }
+        };
+        {
+            let mut handles = self.handles.lock().await;
+            handles.insert(session_id.clone(), slot.clone());
+        }
+
+        let session = SshSession {
+            session_id: session_id.clone(),
+            host_id: host.id.clone(),
+            title: title.clone(),
+            status: "connected".to_string(),
+            started_at: crate::models::now_iso(),
+            error: None,
+        };
+
+        let client = slot.lock().await;
         let channel = client
             .channel_open_session()
             .await
@@ -466,9 +750,9 @@ impl SshManager {
                 },
             );
         });
+        drop(client);
 
         self.ptys.lock().await.insert(session_id.clone(), tx);
-        self.handles.lock().await.insert(session_id.clone(), client);
         self.host_by_session.lock().await.insert(session_id.clone(), host.id.clone());
         let _ = self.app.emit("ssh:status", session.clone());
         Ok(session)
@@ -526,10 +810,14 @@ impl SshManager {
     }
 
     pub async fn exec_command(&self, session_id: &str, command: &str) -> Result<String, SshError> {
-        let mut handles = self.handles.lock().await;
-        let handle = handles
-            .get_mut(session_id)
+        let slot = self
+            .handles
+            .lock()
+            .await
+            .get(session_id)
+            .cloned()
             .ok_or_else(|| SshError::SessionNotFound(session_id.to_string()))?;
+        let handle = slot.lock().await;
         let mut channel = handle
             .channel_open_session()
             .await
@@ -544,7 +832,7 @@ impl SshManager {
                 output.extend_from_slice(&data);
             }
         }
-        drop(handles);
+        drop(handle);
         String::from_utf8(output).map_err(|e| SshError::Channel(format!("exec output is not utf8: {e}")))
     }
 
@@ -557,6 +845,38 @@ impl SshManager {
             .find_map(|(session_id, current_host)| (current_host == host_id).then_some(session_id.clone()))
             .ok_or_else(|| SshError::SessionNotFound(format!("no active session for host {host_id}")))?;
         self.exec_command(&session_id, command).await
+    }
+
+    /// 打开一条非 PTY 的 exec 通道（供 ZMODEM 等二进制协议使用）。
+    pub async fn open_exec_channel(
+        &self,
+        host_id: &str,
+        command: &str,
+    ) -> Result<russh::Channel<russh::client::Msg>, SshError> {
+        let session_id = self
+            .host_by_session
+            .lock()
+            .await
+            .iter()
+            .find_map(|(sid, current_host)| (current_host == host_id).then_some(sid.clone()))
+            .ok_or_else(|| SshError::SessionNotFound(format!("no active session for host {host_id}")))?;
+        let slot = self
+            .handles
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| SshError::SessionNotFound(session_id.to_string()))?;
+        let handle = slot.lock().await;
+        let channel = handle
+            .channel_open_session()
+            .await
+            .map_err(|e| SshError::Channel(format!("open exec channel: {e}")))?;
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|e| SshError::Channel(format!("exec command: {e}")))?;
+        Ok(channel)
     }
 
     pub async fn active_host_ids(&self) -> Vec<String> {
@@ -583,11 +903,21 @@ impl SshManager {
         local_host: &str,
         local_port: u16,
     ) -> Result<u16, SshError> {
-        let mut handles = self.handles.lock().await;
-        let session_id = self.host_by_session.lock().await.iter()
+        let session_id = self
+            .host_by_session
+            .lock()
+            .await
+            .iter()
             .find_map(|(session_id, current_host)| (current_host == host_id).then_some(session_id.clone()))
             .ok_or_else(|| SshError::SessionNotFound(format!("no active session for host {host_id}")))?;
-        let handle = handles.get_mut(&session_id).ok_or_else(|| SshError::SessionNotFound(session_id.clone()))?;
+        let slot = self
+            .handles
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| SshError::SessionNotFound(session_id.clone()))?;
+        let mut handle = slot.lock().await;
         let bound_port = handle.tcpip_forward(listen_addr.to_string(), listen_port as u32).await
             .map_err(|e| SshError::Channel(format!("request remote forwarding: {e}")))? as u16;
         self.remote_forwards.lock().await.insert(session_id, RemoteForwardTarget {
@@ -597,15 +927,54 @@ impl SshManager {
     }
 
     pub async fn stop_remote_forward(&self, host_id: &str, listen_addr: &str, listen_port: u16) -> Result<(), SshError> {
-        let mut handles = self.handles.lock().await;
-        let session_id = self.host_by_session.lock().await.iter()
+        let session_id = self
+            .host_by_session
+            .lock()
+            .await
+            .iter()
             .find_map(|(session_id, current_host)| (current_host == host_id).then_some(session_id.clone()))
             .ok_or_else(|| SshError::SessionNotFound(format!("no active session for host {host_id}")))?;
-        let handle = handles.get_mut(&session_id).ok_or_else(|| SshError::SessionNotFound(session_id.clone()))?;
+        let slot = self
+            .handles
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| SshError::SessionNotFound(session_id.clone()))?;
+        let handle = slot.lock().await;
         handle.cancel_tcpip_forward(listen_addr.to_string(), listen_port as u32).await
             .map_err(|e| SshError::Channel(format!("cancel remote forwarding: {e}")))?;
         self.remote_forwards.lock().await.remove(&session_id);
         Ok(())
+    }
+
+    /// 打开到远端 unix socket（如 /var/run/docker.sock）的 direct-streamlocal 通道，
+    /// 供远程 Docker 桥接复用当前活跃会话的 SSH 连接。
+    pub async fn open_docker_channel(
+        &self,
+        host_id: &str,
+        socket_path: &str,
+    ) -> Result<russh::Channel<russh::client::Msg>, SshError> {
+        let session_id = self
+            .host_by_session
+            .lock()
+            .await
+            .iter()
+            .find_map(|(session_id, current_host)| (current_host == host_id).then_some(session_id.clone()))
+            .ok_or_else(|| SshError::SessionNotFound(format!("no active session for host {host_id}")))?;
+        let slot = self
+            .handles
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| SshError::SessionNotFound(session_id.clone()))?;
+        let handle = slot.lock().await;
+        let channel = handle
+            .channel_open_direct_streamlocal(socket_path)
+            .await
+            .map_err(|e| SshError::Channel(format!("open streamlocal {socket_path}: {e}")))?;
+        Ok(channel)
     }
 
     pub async fn proxy_local_connection(
@@ -615,20 +984,26 @@ impl SshManager {
         remote_host: &str,
         remote_port: u16,
     ) -> Result<(u64, u64), SshError> {
-        let mut handles = self.handles.lock().await;
-        let handle = self
+        let session_id = self
             .host_by_session
             .lock()
             .await
             .iter()
             .find_map(|(session_id, current_host)| (current_host == host_id).then_some(session_id.clone()))
-            .and_then(|session_id| handles.get_mut(&session_id))
             .ok_or_else(|| SshError::SessionNotFound(format!("no active session for host {host_id}")))?;
+        let slot = self
+            .handles
+            .lock()
+            .await
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| SshError::SessionNotFound(session_id.clone()))?;
+        let handle = slot.lock().await;
         let mut channel = handle
             .channel_open_direct_tcpip(remote_host, remote_port as u32, "127.0.0.1", 0)
             .await
             .map_err(|e| SshError::Channel(format!("open forwarding channel: {e}")))?;
-        drop(handles);
+        drop(handle);
 
         let mut local_to_remote = 0_u64;
         let mut remote_to_local = 0_u64;
@@ -660,17 +1035,33 @@ impl SshManager {
 
     pub async fn disconnect(&self, session_id: &str) -> Result<(), SshError> {
         self.ptys.lock().await.remove(session_id);
-        self.host_by_session.lock().await.remove(session_id);
-        let handle = self
-            .handles
-            .lock()
-            .await
-            .remove(session_id)
-            .ok_or_else(|| SshError::SessionNotFound(session_id.to_string()))?;
-        handle
-            .disconnect(Disconnect::ByApplication, "user disconnect", "")
-            .await
-            .map_err(|e| SshError::Connect(e.to_string()))?;
+        let host_id = self.host_by_session.lock().await.remove(session_id);
+        let slot = self.handles.lock().await.remove(session_id);
+        let mut released = false;
+        // 会话复用：仅释放该会话对共享连接的引用；当主机再无会话时才真正断开传输
+        if let Some(host_id) = host_id {
+            let mut pool = self.pool.lock().await;
+            if let Some(entry) = pool.get_mut(&host_id) {
+                entry.sessions.remove(session_id);
+                if entry.sessions.is_empty() {
+                    if let Some(entry) = pool.remove(&host_id) {
+                        let handle = entry.slot.lock().await;
+                        let _ = handle
+                            .disconnect(Disconnect::ByApplication, "no active sessions", "")
+                            .await;
+                    }
+                }
+                released = true; // 由池管理，不再单独 disconnect
+            }
+        }
+        if !released {
+            if let Some(slot) = slot {
+                let handle = slot.lock().await;
+                let _ = handle
+                    .disconnect(Disconnect::ByApplication, "user disconnect", "")
+                    .await;
+            }
+        }
         Ok(())
     }
 }

@@ -1,0 +1,56 @@
+{
+  "nav": {
+    "dashboard": "总览",
+    "hosts": "主机",
+    "sftp": "SFTP",
+    "containers": "容器",
+    "images": "镜像",
+    "volumes": "卷",
+    "networks": "网络",
+    "snippets": "片段",
+    "tunnels": "隧道",
+    "compose": "Compose",
+    "monitor": "监控",
+    "tasks": "任务",
+    "settings": "设置"
+  },
+  "panel": {
+    "dashboard": "总览",
+    "hosts": "SSH 主机",
+    "sftp": "SFTP",
+    "containers": "容器",
+    "images": "镜像",
+    "volumes": "卷",
+    "networks": "网络",
+    "snippets": "命令片段",
+    "tunnels": "隧道",
+    "compose": "Compose",
+    "monitor": "监控",
+    "tasks": "任务",
+    "settings": "设置"
+  },
+  "common": {
+    "cancel": "取消",
+    "save": "保存",
+    "delete": "删除",
+    "refresh": "刷新",
+    "connect": "连接",
+    "connecting": "连接中…",
+    "search": "搜索",
+    "name": "名称",
+    "status": "状态",
+    "type": "类型",
+    "actions": "操作",
+    "active": "活跃",
+    "stopped": "已停止",
+    "running": "运行中",
+    "error": "错误",
+    "online": "在线",
+    "offline": "离线"
+  },
+  "settings": {
+    "title": "设置",
+    "language": "界面语言",
+    "languageHint": "切换后立即生效，偏好保存在本地"
+  }
+}

@@ -1,29 +1,48 @@
-import { LayoutDashboard, Boxes, Server, Image as ImageIcon, Waypoints, Activity, ListTodo, Settings, Search, Moon, Sun, Command, FolderTree, Database, Network as NetworkIcon, TerminalSquare } from "lucide-react";
+import { LayoutDashboard, Boxes, Server, Image as ImageIcon, Waypoints, Activity, ListTodo, Settings, Search, Moon, Sun, Command, FolderTree, Database, Network as NetworkIcon, TerminalSquare, Layers } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useWorkspace } from "@/stores/workspace";
 import { useUi } from "@/stores/workspace";
 import { cn } from "@/lib/utils";
 import iconApp from "@/assets/icon-app.png";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
-const NAV_ITEMS = [
-  { id: "dashboard", label: "总览", icon: LayoutDashboard },
-  { id: "hosts", label: "主机", icon: Server },
-  { id: "sftp", label: "SFTP", icon: FolderTree },
-  { id: "containers", label: "容器", icon: Boxes },
-  { id: "images", label: "镜像", icon: ImageIcon },
-  { id: "volumes", label: "卷", icon: Database },
-  { id: "networks", label: "网络", icon: NetworkIcon },
-  { id: "snippets", label: "片段", icon: TerminalSquare },
-  { id: "tunnels", label: "隧道", icon: Waypoints },
-  { id: "monitor", label: "监控", icon: Activity },
-  { id: "tasks", label: "任务", icon: ListTodo },
-  { id: "settings", label: "设置", icon: Settings },
+const NAV_ITEM_IDS = [
+  "dashboard",
+  "hosts",
+  "sftp",
+  "containers",
+  "images",
+  "volumes",
+  "networks",
+  "snippets",
+  "tunnels",
+  "compose",
+  "monitor",
+  "tasks",
+  "settings",
 ] as const;
 
-export type NavPanelId = (typeof NAV_ITEMS)[number]["id"];
+const NAV_ICONS: Record<(typeof NAV_ITEM_IDS)[number], typeof LayoutDashboard> = {
+  dashboard: LayoutDashboard,
+  hosts: Server,
+  sftp: FolderTree,
+  containers: Boxes,
+  images: ImageIcon,
+  volumes: Database,
+  networks: NetworkIcon,
+  snippets: TerminalSquare,
+  tunnels: Waypoints,
+  compose: Layers,
+  monitor: Activity,
+  tasks: ListTodo,
+  settings: Settings,
+};
+
+export type NavPanelId = (typeof NAV_ITEM_IDS)[number];
 
 /** 44px top nav rail — macOS-style toolbar */
 export function NavRail({ current, onNavigate }: { current: NavPanelId; onNavigate: (id: NavPanelId) => void }) {
+  const { t } = useTranslation();
   const { theme, toggleTheme, setCommandPaletteOpen } = useUi();
   const bottomPanel = useWorkspace((s) => s.bottomPanel);
   const setBottomPanel = useWorkspace((s) => s.setBottomPanel);
@@ -45,25 +64,29 @@ export function NavRail({ current, onNavigate }: { current: NavPanelId; onNaviga
         </div>
 
         <nav className="flex items-center gap-0.5">
-          {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
-            <Tooltip key={id}>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => onNavigate(id)}
-                  className={cn(
-                    "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] font-medium transition-colors",
-                    current === id
-                      ? "bg-active-fill text-foreground"
-                      : "text-secondary hover:bg-hover-fill hover:text-foreground"
-                  )}
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                  {label}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">{label}</TooltipContent>
-            </Tooltip>
-          ))}
+          {NAV_ITEM_IDS.map((id) => {
+            const Icon = NAV_ICONS[id];
+            const label = t(`nav.${id}`);
+            return (
+              <Tooltip key={id}>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => onNavigate(id)}
+                    className={cn(
+                      "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] font-medium transition-colors",
+                      current === id
+                        ? "bg-active-fill text-foreground"
+                        : "text-secondary hover:bg-hover-fill hover:text-foreground"
+                    )}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                    {label}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">{label}</TooltipContent>
+              </Tooltip>
+            );
+          })}
         </nav>
       </div>
 

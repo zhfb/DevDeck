@@ -5,6 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import App from "./App";
 import { Toaster } from "@/components/ui/sonner";
 import { startMockStreams, isTauri } from "@/lib/api";
+import "@/lib/i18n"; // i18n init (zh/en, auto-detect)
 import "@/styles/globals.css";
 
 const queryClient = new QueryClient({

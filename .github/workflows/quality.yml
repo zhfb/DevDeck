@@ -1,0 +1,60 @@
+name: quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: backend · test + energy baseline
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Build (debug)
+        run: cargo build --manifest-path src-tauri/Cargo.toml
+      - name: Energy / footprint baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=src-tauri/target/debug/devdeck
+          SIZE=$(stat -f%z "$BIN")
+          # cold-start footprint: peak RSS over an 8s headless run
+          /usr/bin/time -l timeout 8 "$BIN" >/dev/null 2>/tmp/devdeck_time.txt || true
+          RSS=$(grep 'maximum resident set size' /tmp/devdeck_time.txt | awk '{print $1}')
+          echo "## ⚡ Energy baseline (macos-14, debug build)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| metric | value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| binary size (bytes) | $SIZE |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| peak RSS @8s (bytes) | ${RSS:-n/a} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| commit | $GITHUB_SHA |" >> "$GITHUB_STEP_SUMMARY"
+          # persist for future baseline comparison
+          mkdir -p baseline
+          printf 'binary_size_bytes=%s\npeak_rss_bytes=%s\ncommit=%s\n' "$SIZE" "${RSS:-n/a}" "$GITHUB_SHA" \
+            > baseline/metrics.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: energy-baseline
+          path: baseline/metrics.txt
+
+  frontend:
+    name: frontend · typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - run: pnpm install --frozen-lockfile
+        working-directory: frontend
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+        working-directory: frontend
+      - name: Build
+        run: pnpm build
+        working-directory: frontend

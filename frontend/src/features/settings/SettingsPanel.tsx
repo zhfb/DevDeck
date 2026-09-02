@@ -1,10 +1,13 @@
 import { useState } from "react";
-import { Database, Download, Settings, Shield, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Database, Download, RefreshCw, Settings, Shield, SlidersHorizontal, Trash2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import i18n, { setLanguage, SUPPORTED_LANGUAGES } from "@/lib/i18n";
+import { invoke } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import type { LucideIcon } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
 import { useEngines } from "@/lib/queries";
 import { useUi } from "@/stores/workspace";
-import { cn } from "@/lib/utils";
 import { EngineBadge } from "@/components/shared";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -81,8 +84,47 @@ function SettingRow({
  * 规格：docs/管理面板规划.md §7
  */
 export default function SettingsPanel(_props: PanelProps) {
+  const { t } = useTranslation();
   const { theme, setTheme } = useUi();
   const { data: engines } = useEngines();
+
+  // 自动更新
+  const [updateInfo, setUpdateInfo] = useState<{
+    available: boolean;
+    currentVersion: string;
+    version: string;
+  } | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [installing, setInstalling] = useState(false);
+
+  const checkUpdate = async () => {
+    setChecking(true);
+    try {
+      const info = await invoke<{
+        available: boolean;
+        currentVersion: string;
+        version: string;
+      }>("updater_check");
+      setUpdateInfo(info);
+      toast.success(info.available ? `发现新版本 v${info.version}` : "已是最新版本");
+    } catch (e) {
+      toast.error("检查更新失败", { description: String(e) });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const installUpdate = async () => {
+    setInstalling(true);
+    try {
+      const msg = await invoke<string>("updater_install");
+      toast.success(msg);
+    } catch (e) {
+      toast.error("安装更新失败", { description: String(e) });
+    } finally {
+      setInstalling(false);
+    }
+  };
 
   // 占位开关状态
   const [openDashboardOnLaunch, setOpenDashboardOnLaunch] = useState(false);
@@ -115,17 +157,21 @@ export default function SettingsPanel(_props: PanelProps) {
               </Select>
             </div>
           </SettingRow>
-          <SettingRow title="语言" description="界面显示语言">
+          <SettingRow title="语言" description={t("settings.languageHint")}>
             <div className="w-40">
-              <Select disabled value="zh-CN">
+              <Select
+                value={i18n.language?.startsWith("en") ? "en" : "zh"}
+                onValueChange={(v) => setLanguage(v as "zh" | "en")}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="zh-CN">简体中文</SelectItem>
-                  <SelectItem value="en" disabled>
-                    English (V1.1)
-                  </SelectItem>
+                  {SUPPORTED_LANGUAGES.map((l) => (
+                    <SelectItem key={l.code} value={l.code}>
+                      {l.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -187,6 +233,22 @@ export default function SettingsPanel(_props: PanelProps) {
           </SettingRow>
           <SettingRow title="降载状态机" description="后台 Tab 零渲染 / 降采样">
             <Switch checked={throttleState} onCheckedChange={setThrottleState} />
+          </SettingRow>
+          <SettingRow
+            title="自动更新"
+            description={updateInfo ? `当前 v${updateInfo.currentVersion} · ${updateInfo.available ? `发现新版本 v${updateInfo.version}` : "已是最新版本"}` : "检查 GitHub Release 并安装"}
+          >
+            <div className="flex items-center gap-2">
+              {updateInfo?.available && (
+                <Button variant="secondary" size="sm" onClick={() => void installUpdate()} disabled={installing}>
+                  {installing ? "安装中…" : "安装更新"}
+                </Button>
+              )}
+              <Button variant="secondary" size="sm" onClick={() => void checkUpdate()} disabled={checking || installing}>
+                <RefreshCw className={cn(checking && "animate-spin")} />
+                检查更新
+              </Button>
+            </div>
           </SettingRow>
         </SettingSection>
 

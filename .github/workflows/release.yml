@@ -46,7 +46,67 @@ jobs:
           else
             cargo tauri build --bundles app,dmg
           fi
+      - name: Notarize (Apple notary service) + staple
+        if: ${{ secrets.APPLE_ID != '' || secrets.APPLE_API_KEY != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euxo pipefail
+          DMG=$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)
+          APP=$(ls -d src-tauri/target/release/bundle/macos/*.app 2>/dev/null | head -1)
+          # prefer API-key based auth, fall back to App Store Connect username/password
+          if [ -n "$APPLE_API_KEY" ]; then
+            echo "$APPLE_API_KEY" > /tmp/AuthKey_${APPLE_API_KEY_ID}.p8
+            xcrun notarytool submit "$DMG" --wait --key /tmp/AuthKey_${APPLE_API_KEY_ID}.p8 \
+              --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" \
+              --team-id "$APPLE_TEAM_ID"
+          else
+            xcrun notarytool submit "$DMG" --wait --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"
+          fi
+          xcrun stapler staple "$DMG"
+          if [ -n "$APP" ]; then xcrun stapler staple "$APP"; fi
+      - name: Sign artifacts + generate updater feed
+        if: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euxo pipefail
+          cd src-tauri/target/release/bundle
+          DMG=$(ls dmg/*.dmg | head -1)
+          VERSION=$(node -p "require('../../../tauri.conf.json').version")
+          # minisign-compatible ed25519 signature consumed by tauri-plugin-updater
+          tauri signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" \
+            -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" "$DMG"
+          SIG=$(cat "$DMG.sig")
+          python3 - <<'PY'
+import json, os, time
+sig = open(os.environ['DMG'] + '.sig').read()
+version = os.environ['VERSION']
+url = f"https://github.com/zhfb/DevDeck/releases/download/v{version}/" + os.path.basename(os.environ['DMG'])
+feed = {
+  "version": version,
+  "notes": "DevDeck release",
+  "pub_date": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+  "platforms": {
+    "x86_64-apple-darwin": {"signature": sig, "url": url}
+  }
+}
+os.makedirs('feed', exist_ok=True)
+with open('feed/latest-x86_64-apple-darwin.json', 'w') as f:
+    json.dump(feed, f, indent=2)
+print("feed written:", feed['platforms'])
+PY
+          cp "$DMG.sig" feed/
       - uses: actions/upload-artifact@v4
         with:
           name: DevDeck-macos
-          path: src-tauri/target/release/bundle/**/*
+          path: |
+            src-tauri/target/release/bundle/**/*
+            src-tauri/target/release/bundle/feed/*.json

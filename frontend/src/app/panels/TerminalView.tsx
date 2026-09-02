@@ -1,10 +1,17 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { isTauri, onEvent, invoke } from "@/lib/api";
-import { onTerminalInsert } from "@/lib/terminalBus";
+import {
+  onTerminalInsert,
+  setBroadcast,
+  getBroadcastGroup,
+  isBroadcastSession,
+  onBroadcastChange,
+  notifyBroadcastChange,
+} from "@/lib/terminalBus";
 import type { SshSession } from "@/lib/types";
 interface TerminalViewProps {
   sessionId?: string;
@@ -16,6 +23,12 @@ interface TerminalViewProps {
   env?: string;
 }
 
+/** asciinema v2 `.cast` session recording entry. */
+interface CastEntry {
+  t: number;
+  data: string;
+}
+
 /**
  * Terminal pane. In Tauri mode: attaches to the Rust SSH session via events
  * (`term:data:<sessionId>` out, `term:input:<sessionId>` in). In browser mock
@@ -24,12 +37,75 @@ interface TerminalViewProps {
 export function TerminalView({ sessionId, hostId, containerId, engineId, kind = "ssh", title, env }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [broadcast, setBroadcastState] = useState(false);
+  const castRef = useRef<CastEntry[]>([]);
+  const recordStartRef = useRef(0);
+  const recordingRef = useRef(false);
+  const broadcastRef = useRef(false);
+  const recordDisposerRef = useRef<(() => void) | null>(null);
+
+  const setRecordingState = (on: boolean) => {
+    recordingRef.current = on;
+    setRecording(on);
+  };
+
+  // keep refs in sync with state for the useEffect callbacks
+  const setBroadcastRef = (on: boolean) => {
+    broadcastRef.current = on;
+    setBroadcastState(on);
+  };
+
+  const toggleRecording = () => {
+    const term = termRef.current;
+    if (!term) return;
+    if (recording) {
+      // stop & export .cast
+      const entries = castRef.current;
+      const cast = {
+        version: 2,
+        width: term.cols,
+        height: term.rows,
+        timestamp: Math.floor(recordStartRef.current / 1000),
+        env: { SHELL: "/bin/bash", TERM: "xterm-256color" },
+      };
+      const lines = [JSON.stringify(cast)];
+      for (const e of entries) {
+        lines.push(JSON.stringify([Number(e.t.toFixed(3)), "o", e.data]));
+      }
+      const blob = new Blob([lines.join("\n") + "\n"], { type: "application/x-asciicast" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      a.href = url;
+      a.download = `devdeck-${sessionId ?? "session"}-${stamp}.cast`;
+      a.click();
+      URL.revokeObjectURL(url);
+      castRef.current = [];
+      recordDisposerRef.current?.();
+      recordDisposerRef.current = null;
+      setRecordingState(false);
+    } else {
+      castRef.current = [];
+      recordStartRef.current = Date.now();
+      setRecordingState(true);
+    }
+  };
+
+  const toggleBroadcast = () => {
+    if (!sessionId) return;
+    const on = !broadcastRef.current;
+    setBroadcast(sessionId, on);
+    setBroadcastRef(on);
+    notifyBroadcastChange();
+  };
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     let term: Terminal | null = null;
     let ro: ResizeObserver | null = null;
+    let disposed = false;
     try {
       term = new Terminal({
         fontFamily:
@@ -104,12 +180,37 @@ export function TerminalView({ sessionId, hostId, containerId, engineId, kind = 
       return;
     }
 
+    // 会话录制（P1）：包装 term.write 捕获全部输出（含本地提示）→ asciinema v2
+    const origWrite = term.write.bind(term);
+    term.write = ((data: string | Uint8Array) => {
+      if (recordingRef.current) {
+        const s = typeof data === "string" ? data : new TextDecoder().decode(data);
+        castRef.current.push({
+          t: (Date.now() - recordStartRef.current) / 1000,
+          data: s,
+        });
+      }
+      origWrite(data);
+    }) as typeof term.write;
+    const recordDisposer = { dispose: () => {} };
+    recordDisposerRef.current = () => {
+      /* wrapped write has no listener to remove */
+    };
+
+    // 广播终端（P1）：监听组变化，刷新本窗格按钮状态
+    const unsubBc = onBroadcastChange(() => {
+      if (!sessionId) return;
+      const on = isBroadcastSession(sessionId);
+      broadcastRef.current = on;
+      setBroadcastState(on);
+    });
+    if (sessionId && isBroadcastSession(sessionId)) setBroadcastRef(true);
+
     // Tauri mode: wire real SSH or Docker exec session — Rust emits `term:data:<sid>`,
     // input/resize go back via term_input / term_resize commands.
     let unsub: (() => void) | undefined;
     let unsubStatus: (() => void) | undefined;
     let unsubInsert: (() => void) | undefined;
-    let disposed = false;
     // Snippets (P1): let a SnippetPanel inject text into this pane.
     if (sessionId) {
       unsubInsert = onTerminalInsert(sessionId, (text) => {
@@ -121,7 +222,13 @@ export function TerminalView({ sessionId, hostId, containerId, engineId, kind = 
         if (!disposed && term) term.write(text);
       }).then((u) => (unsub = u));
       term.onData((d) => {
-        void invoke("term_input", { sessionId, data: d }).catch(() => {});
+        if (disposed || !term) return;
+        if (broadcastRef.current) {
+          // 广播：扇出到组内全部会话，本会话也包含在组内
+          void invoke("ssh_broadcast", { sessionIds: getBroadcastGroup(), data: d }).catch(() => {});
+        } else {
+          void invoke("term_input", { sessionId, data: d }).catch(() => {});
+        }
       });
       term.onResize(({ cols, rows }) => {
         void invoke("term_resize", { sessionId, cols, rows }).catch(() => {});
@@ -218,6 +325,9 @@ export function TerminalView({ sessionId, hostId, containerId, engineId, kind = 
 
     return () => {
       disposed = true;
+      recordDisposerRef.current = null;
+      unsubBc();
+      if (sessionId) setBroadcast(sessionId, false);
       ro?.disconnect();
       unsub?.();
       unsubStatus?.();
@@ -232,5 +342,45 @@ export function TerminalView({ sessionId, hostId, containerId, engineId, kind = 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  return <div ref={containerRef} className="xterm-pane h-full w-full" />;
+  return (
+    <div className="relative h-full w-full">
+      <div ref={containerRef} className="xterm-pane h-full w-full" />
+      {/* 终端工具栏：会话录制 + 广播 */}
+      <div className="pointer-events-none absolute right-3 top-2 z-10 flex items-center gap-1.5 opacity-0 transition-opacity hover:opacity-100">
+        <button
+          type="button"
+          title={recording ? "停止录制并导出 .cast" : "录制会话（asciinema .cast）"}
+          onClick={toggleRecording}
+          className={`pointer-events-auto flex h-6 items-center gap-1 rounded px-2 text-[11px] font-medium ${
+            recording
+              ? "animate-pulse bg-red-600/90 text-white"
+              : "bg-neutral-800/80 text-neutral-200 hover:bg-neutral-700"
+          }`}
+        >
+          <span className={`h-2 w-2 rounded-full ${recording ? "bg-white" : "bg-red-500"}`} />
+          {recording ? "录制中" : "录制"}
+        </button>
+        {sessionId && (
+          <button
+            type="button"
+            title={
+              broadcast
+                ? "退出广播模式（输入扇出到广播组）"
+                : "加入广播组：输入扇出到组内全部会话"
+            }
+            onClick={toggleBroadcast}
+            className={`pointer-events-auto flex h-6 items-center gap-1 rounded px-2 text-[11px] font-medium ${
+              broadcast
+                ? "bg-blue-600/90 text-white"
+                : "bg-neutral-800/80 text-neutral-200 hover:bg-neutral-700"
+            }`}
+          >
+            <span className={`h-2 w-2 rounded-full ${broadcast ? "bg-white" : "bg-blue-400"}`} />
+            {broadcast ? "广播中" : "广播"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
+

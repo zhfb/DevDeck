@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Boxes,
   Info,
@@ -11,9 +11,11 @@ import {
   Square,
   Terminal,
   Trash2,
+  Waypoints,
 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
-import { useContainerAction, useContainerCreate, useContainers, useEngines } from "@/lib/queries";
+import { useContainerAction, useContainerCreate, useContainers, useEngines, useHosts } from "@/lib/queries";
+import { invoke } from "@/lib/api";
 import {
   cn,
   containerStatusDot,
@@ -26,6 +28,7 @@ import {
 import type { Container, ContainerState, PortMapping } from "@/lib/types";
 import { useWorkspace } from "@/stores/workspace";
 import { EmptyState, EngineBadge } from "@/components/shared";
+import { Switch } from "@/components/ui/switch";
 import { StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -153,6 +156,37 @@ export default function ContainersPanel(_props: PanelProps) {
   const [runName, setRunName] = useState("");
   const [runImage, setRunImage] = useState("");
   const [runPorts, setRunPorts] = useState("");
+
+  // 事件驱动端口转发（P2）：容器 start/restart 时自动建隧道，停止时拆除
+  const { data: hosts } = useHosts();
+  const [autoForwardOn, setAutoForwardOn] = useState(false);
+  const [autoForwardBusy, setAutoForwardBusy] = useState(false);
+  const activeEngineId = engineFilter !== "all" ? engineFilter : engines?.[0]?.id;
+
+  useEffect(() => {
+    if (!activeEngineId) return;
+    invoke<{ hostId: string | null } | string | null>("auto_forward_get", { engineId: activeEngineId })
+      .then((r) => {
+        const hostId = typeof r === "string" ? r : r?.hostId ?? null;
+        setAutoForwardOn(!!hostId);
+      })
+      .catch(() => setAutoForwardOn(false));
+  }, [activeEngineId]);
+
+  const toggleAutoForward = async (on: boolean) => {
+    if (!activeEngineId) return;
+    setAutoForwardBusy(true);
+    try {
+      const targetHost = on ? (hosts?.[0]?.id ?? null) : null;
+      await invoke("auto_forward_set", { engineId: activeEngineId, hostId: targetHost });
+      setAutoForwardOn(on);
+      toast.success(on ? "已开启事件驱动端口转发" : "已关闭事件驱动端口转发");
+    } catch (e) {
+      toast.error("切换自动转发失败", { description: String(e) });
+    } finally {
+      setAutoForwardBusy(false);
+    }
+  };
 
   const engineById = useMemo(
     () => new Map((engines ?? []).map((e) => [e.id, e])),
@@ -321,6 +355,18 @@ export default function ContainersPanel(_props: PanelProps) {
           onChange={(e) => setSearch(e.target.value)}
         />
         <div className="flex-1" />
+        <div
+          className="flex items-center gap-1.5 rounded-md border border-border-subtle bg-hover-fill px-2 py-1"
+          title="容器 start/restart 时自动为端口映射建立本地隧道，停止时拆除"
+        >
+          <Waypoints className="h-3.5 w-3.5 text-muted" />
+          <span className="text-[11px] text-muted">自动转发</span>
+          <Switch
+            checked={autoForwardOn}
+            onCheckedChange={(v) => void toggleAutoForward(v)}
+            disabled={autoForwardBusy || !activeEngineId}
+          />
+        </div>
         <Button variant="secondary" size="sm" onClick={() => refetch()} disabled={isFetching}>
           <RefreshCw className={cn(isFetching && "animate-spin")} />
           刷新

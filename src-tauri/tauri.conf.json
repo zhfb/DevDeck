@@ -33,6 +33,15 @@
       "iconAsTemplate": true
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNBREU0NDAxNkQyQUZFMzUKUldRMS9pcHRBVVRlT2dQSXMwTGUxeHN2Qk9EOTYyQlR5ZE11ck1uVVh1anBYdzVQZ2tlYStUckkK",
+      "endpoints": [
+        "https://github.com/zhfb/DevDeck/releases/latest/download/latest-x86_64-apple-darwin.json",
+        "https://github.com/zhfb/DevDeck/releases/latest/download/latest-aarch64-apple-darwin.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

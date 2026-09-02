@@ -3,6 +3,8 @@ import { Play, Plus, Square, Trash2, Waypoints } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
 import { useHosts, useTunnelAction, useTunnels } from "@/lib/queries";
 import { usePalette } from "@/stores/live";
+import { invoke } from "@/lib/api";
+import { useQueryClient } from "@tanstack/react-query";
 import { cn, formatBytes, timeAgo } from "@/lib/utils";
 import type { Tunnel, TunnelType } from "@/lib/types";
 import { EmptyState } from "@/components/shared";
@@ -70,6 +72,7 @@ export default function TunnelsPanel(_props: PanelProps) {
   const { data: hosts } = useHosts();
   const { mutate: tunnelAction, isPending: actionPending } = useTunnelAction();
   const registerAction = usePalette((s) => s.registerAction);
+  const queryClient = useQueryClient();
 
   const [filter, setFilter] = useState<TunnelFilter>("all");
   const [createOpen, setCreateOpen] = useState(false);
@@ -125,7 +128,7 @@ export default function TunnelsPanel(_props: PanelProps) {
     );
   };
 
-  const submitCreate = (e: React.FormEvent) => {
+  const submitCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!hostId) {
       toast.error("请选择目标主机");
@@ -135,8 +138,36 @@ export default function TunnelsPanel(_props: PanelProps) {
       toast.error("请填写名称与监听端口");
       return;
     }
-    setCreateOpen(false);
-    toast.success("隧道创建请求已发送（演示模式）");
+    try {
+      const tunnel: Tunnel = {
+        id: `t-${Date.now().toString(36)}`,
+        name: name.trim(),
+        type,
+        hostId,
+        listenAddr: listenAddr.trim() || "127.0.0.1",
+        listenPort: Number(listenPort) || 0,
+        remoteHost: remoteHost.trim() || "localhost",
+        remotePort: type === "socks5" ? 0 : Number(remotePort) || 0,
+        status: "stopped",
+      };
+      await invoke("tunnels.save", { tunnel });
+      await invoke("tunnels.start", { id: tunnel.id });
+      await queryClient.invalidateQueries({ queryKey: ["tunnels"] });
+      toast.success(`隧道「${name}」已创建并启动`);
+      setCreateOpen(false);
+    } catch (err) {
+      toast.error("创建隧道失败", { description: String(err) });
+    }
+  };
+
+  const removeTunnel = async (t: Tunnel) => {
+    try {
+      await invoke("tunnels.delete", { id: t.id });
+      await queryClient.invalidateQueries({ queryKey: ["tunnels"] });
+      toast.success(`隧道「${t.name}」已删除`);
+    } catch (err) {
+      toast.error("删除隧道失败", { description: String(err) });
+    }
   };
 
   return (
@@ -264,7 +295,7 @@ export default function TunnelsPanel(_props: PanelProps) {
                             <AlertDialogFooter>
                               <AlertDialogCancel>取消</AlertDialogCancel>
                               <AlertDialogAction
-                                onClick={() => toast.success(`隧道「${t.name}」已删除（演示模式）`)}
+                                onClick={() => void removeTunnel(t)}
                               >
                                 删除
                               </AlertDialogAction>

@@ -26,6 +26,10 @@ export interface Host {
   /** key fingerprint from known_hosts TOFU */
   fingerprint?: string;
   lastConnectedAt?: string;
+  /** 跳板机（ProxyJump）：经跳板 direct-tcpip 转发连接目标 */
+  jumpHost?: string;
+  jumpPort?: number;
+  jumpUser?: string;
   createdAt: string;
 }
 
@@ -153,6 +157,13 @@ export interface Tunnel {
   bytesOut?: number;
   startedAt?: string;
   error?: string;
+}
+
+/** docker compose ps --format json 单行解析结果（后端 ComposeService） */
+export interface ComposeService {
+  name: string;
+  state: string;
+  status: string;
 }
 
 export interface SshSession {

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { NavRail, type NavPanelId } from "./app/NavRail";
 import { ResourceTree } from "./app/ResourceTree";
 import { TabCanvas } from "./app/TabCanvas";
@@ -11,26 +12,28 @@ import { HostKeyDialog } from "./components/HostKeyDialog";
 import { useWorkspace } from "./stores/workspace";
 import { PowerController } from "./stores/power";
 
-const PANEL_TITLES: Record<NavPanelId, string> = {
-  dashboard: "总览",
-  hosts: "SSH 主机",
-  sftp: "SFTP",
-  containers: "容器",
-  images: "镜像",
-  volumes: "卷",
-  networks: "网络",
-  snippets: "命令片段",
-  tunnels: "隧道",
-  monitor: "监控",
-  tasks: "任务",
-  settings: "设置",
-};
+const PANEL_IDS = [
+  "dashboard",
+  "hosts",
+  "sftp",
+  "containers",
+  "images",
+  "volumes",
+  "networks",
+  "snippets",
+  "tunnels",
+  "compose",
+  "monitor",
+  "tasks",
+  "settings",
+] as const satisfies readonly NavPanelId[];
 
 /**
  * App shell: 44px nav rail + resource tree sidebar + tab canvas + bottom dock.
  * Layout from docs/管理面板规划.md §3.
  */
 export default function App() {
+  const { t } = useTranslation();
   const [currentPanel, setCurrentPanel] = useState<NavPanelId>("dashboard");
   const openTab = useWorkspace((s) => s.openTab);
 
@@ -38,9 +41,9 @@ export default function App() {
     const p = panel as NavPanelId;
     setCurrentPanel(p);
     if (p === "dashboard") {
-      openTab({ kind: "dashboard", title: "总览", env: "none" });
-    } else if (PANEL_TITLES[p]) {
-      openTab({ kind: "panel", title: PANEL_TITLES[p], panel: p, env: "none" });
+      openTab({ kind: "dashboard", title: t("panel.dashboard"), env: "none" });
+    } else if (PANEL_IDS.includes(p)) {
+      openTab({ kind: "panel", title: t(`panel.${p}`), panel: p, env: "none" });
     }
   };
 

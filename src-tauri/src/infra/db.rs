@@ -78,6 +78,9 @@ impl AppDb {
                 credential_ref TEXT,
                 fingerprint TEXT,
                 last_connected_at TEXT,
+                jump_host TEXT,
+                jump_port INTEGER,
+                jump_user TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(group_id) REFERENCES host_groups(id)
             );
@@ -111,6 +114,22 @@ impl AppDb {
             );
             "#,
         )?;
+
+        // migration: add jump-host columns to an existing hosts table
+        let has_jump = self
+            .conn
+            .prepare("PRAGMA table_info(hosts)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|c| c == "jump_host");
+        if !has_jump {
+            self.conn.execute_batch(
+                "ALTER TABLE hosts ADD COLUMN jump_host TEXT;
+                 ALTER TABLE hosts ADD COLUMN jump_port INTEGER;
+                 ALTER TABLE hosts ADD COLUMN jump_user TEXT;",
+            )?;
+        }
         Ok(())
     }
 
@@ -162,7 +181,7 @@ impl AppDb {
     // ---- hosts ----
     pub fn list_hosts(&self) -> Result<Vec<Host>, DbError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, address, port, user, group_id, env, credential_ref, fingerprint, last_connected_at, created_at FROM hosts ORDER BY name",
+            "SELECT id, name, address, port, user, group_id, env, credential_ref, fingerprint, last_connected_at, jump_host, jump_port, jump_user, created_at FROM hosts ORDER BY name",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(Host {
@@ -176,7 +195,10 @@ impl AppDb {
                 credential_ref: r.get(7)?,
                 fingerprint: r.get(8)?,
                 last_connected_at: r.get(9)?,
-                created_at: r.get(10)?,
+                jump_host: r.get(10)?,
+                jump_port: r.get(11)?,
+                jump_user: r.get(12)?,
+                created_at: r.get(13)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -184,7 +206,7 @@ impl AppDb {
 
     pub fn get_host(&self, id: &str) -> Result<Option<Host>, DbError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, address, port, user, group_id, env, credential_ref, fingerprint, last_connected_at, created_at FROM hosts WHERE id = ?1",
+            "SELECT id, name, address, port, user, group_id, env, credential_ref, fingerprint, last_connected_at, jump_host, jump_port, jump_user, created_at FROM hosts WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], |r| {
             Ok(Host {
@@ -198,7 +220,10 @@ impl AppDb {
                 credential_ref: r.get(7)?,
                 fingerprint: r.get(8)?,
                 last_connected_at: r.get(9)?,
-                created_at: r.get(10)?,
+                jump_host: r.get(10)?,
+                jump_port: r.get(11)?,
+                jump_user: r.get(12)?,
+                created_at: r.get(13)?,
             })
         })?;
         Ok(rows.next().transpose()?)
@@ -206,15 +231,17 @@ impl AppDb {
 
     pub fn upsert_host(&self, h: &Host) -> Result<(), DbError> {
         self.conn.execute(
-            "INSERT INTO hosts (id, name, address, port, user, group_id, env, credential_ref, fingerprint, last_connected_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO hosts (id, name, address, port, user, group_id, env, credential_ref, fingerprint, last_connected_at, jump_host, jump_port, jump_user, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(id) DO UPDATE SET
                name=excluded.name, address=excluded.address, port=excluded.port,
                user=excluded.user, group_id=excluded.group_id, env=excluded.env,
-               credential_ref=excluded.credential_ref, fingerprint=excluded.fingerprint",
+               credential_ref=excluded.credential_ref, fingerprint=excluded.fingerprint,
+               jump_host=excluded.jump_host, jump_port=excluded.jump_port, jump_user=excluded.jump_user",
             params![
                 h.id, h.name, h.address, h.port, h.user, h.group_id, h.env,
-                h.credential_ref, h.fingerprint, h.last_connected_at, h.created_at
+                h.credential_ref, h.fingerprint, h.last_connected_at,
+                h.jump_host, h.jump_port, h.jump_user, h.created_at
             ],
         )?;
         Ok(())

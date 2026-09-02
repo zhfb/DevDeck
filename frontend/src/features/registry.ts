@@ -19,6 +19,7 @@ export const PANEL_REGISTRY: Record<string, ComponentType<PanelProps>> = {
   networks: lazy(() => import("@/features/networks/NetworksPanel")),
   snippets: lazy(() => import("@/features/snippets/SnippetsPanel")),
   tunnels: lazy(() => import("@/features/tunnels/TunnelsPanel")),
+  compose: lazy(() => import("@/features/compose/ComposePanel")),
   monitor: lazy(() => import("@/features/monitor/MonitorPanel")),
   tasks: lazy(() => import("@/features/tasks/TasksPanel")),
   settings: lazy(() => import("@/features/settings/SettingsPanel")),

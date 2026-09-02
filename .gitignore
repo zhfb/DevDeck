@@ -17,3 +17,6 @@ src-tauri/target/
 
 # 内部文档（评审/规划类，不入库）
 docs/
+
+# Tauri updater 签名私钥（绝不可提交；公钥在 tauri.conf.json）
+src-tauri/.signing/
