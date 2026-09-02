@@ -63,24 +63,26 @@ export function NavRail({ current, onNavigate }: { current: NavPanelId; onNaviga
           <span className="text-[14px] font-semibold tracking-tight">DevDeck</span>
         </div>
 
-        <nav className="flex items-center gap-0.5">
+        <nav className="no-drag flex items-center gap-1">
           {NAV_ITEM_IDS.map((id) => {
             const Icon = NAV_ICONS[id];
             const label = t(`nav.${id}`);
+            const active = current === id;
             return (
               <Tooltip key={id}>
                 <TooltipTrigger asChild>
                   <button
                     onClick={() => onNavigate(id)}
+                    aria-current={active ? "page" : undefined}
                     className={cn(
-                      "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] font-medium transition-colors",
-                      current === id
+                      "flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[12.5px] font-medium transition-colors",
+                      active
                         ? "bg-active-fill text-foreground"
                         : "text-secondary hover:bg-hover-fill hover:text-foreground"
                     )}
                   >
-                    <Icon className="h-3.5 w-3.5" />
-                    {label}
+                    <Icon className="h-3.5 w-3.5 shrink-0" strokeWidth={active ? 2.2 : 1.9} />
+                    <span className="leading-none">{label}</span>
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">{label}</TooltipContent>

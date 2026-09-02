@@ -14,11 +14,15 @@
 //! 全局 CustomEvent（`devdeck:new-ssh` / `devdeck:engine-status`）。
 
 use tauri::{Emitter, Manager};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 托盘图标 id（OS 级标识，与窗口 label 无关）。
 const TRAY_ID: &str = "main";
 /// 主窗口 label（tauri.conf.json 未显式指定，默认即 "main"）。
 const MAIN_WINDOW: &str = "main";
+
+/// 防止 dev 热重载 / 重复 setup 时在菜单栏创建出多个托盘图标。
+static TRAY_CREATED: AtomicBool = AtomicBool::new(false);
 
 /// 菜单项 id。
 const ITEM_OPEN: &str = "open";
@@ -32,6 +36,11 @@ const TRAY_ACTION_EVENT: &str = "tray:action";
 /// 初始化 macOS 菜单栏托盘图标及其菜单。
 pub fn init_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
+
+    if TRAY_CREATED.swap(true, Ordering::SeqCst) {
+        tracing::debug!("devdeck: tray already created, skipping duplicate");
+        return Ok(());
+    }
 
     let icon = app
         .default_window_icon()

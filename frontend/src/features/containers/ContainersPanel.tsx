@@ -396,17 +396,31 @@ export default function ContainersPanel(_props: PanelProps) {
             ))}
           </div>
         ) : filtered.length === 0 ? (
-          <EmptyState
-            icon={Boxes}
-            title="暂无容器"
-            description="本地引擎不可用或没有容器"
-            action={
-              <Button variant="secondary" size="sm" onClick={() => refetch()}>
-                <RefreshCw />
-                刷新
-              </Button>
-            }
-          />
+          engines?.length ? (
+            <EmptyState
+              icon={Boxes}
+              title="暂无容器"
+              description="当前引擎没有运行中的容器"
+              action={
+                <Button variant="secondary" size="sm" onClick={() => refetch()}>
+                  <RefreshCw />
+                  刷新
+                </Button>
+              }
+            />
+          ) : (
+            <EmptyState
+              icon={Boxes}
+              title="未检测到 Docker 引擎"
+              description="请先启动 OrbStack / Docker Desktop / Colima 或 Podman，再点击刷新重新探测"
+              action={
+                <Button variant="secondary" size="sm" onClick={() => refetch()}>
+                  <RefreshCw />
+                  重新检测
+                </Button>
+              }
+            />
+          )
         ) : (
           <Table>
             <TableHeader>

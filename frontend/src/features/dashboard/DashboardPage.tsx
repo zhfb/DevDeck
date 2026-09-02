@@ -205,7 +205,10 @@ export default function DashboardPage({ onOpenPanel }: PanelProps) {
                 </div>
               ))
             ) : (
-              <div className="col-span-full py-4 text-center text-[12px] text-quaternary">未检测到 Docker 引擎</div>
+              <div className="col-span-full flex flex-col items-center gap-1 py-4 text-center text-[12px] text-quaternary">
+                <span>未检测到 Docker 引擎</span>
+                <span className="text-[11px]">请先启动 OrbStack / Docker Desktop / Colima 或 Podman，引擎会自动探测</span>
+              </div>
             )}
           </CardContent>
         </Card>

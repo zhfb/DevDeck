@@ -18,6 +18,7 @@ import {
 import { useEngines, useHosts, useHostGroups, useTunnels, useContainers } from "@/lib/queries";
 import { useWorkspace } from "@/stores/workspace";
 import { useLive, useConnect } from "@/stores/live";
+import { isTauri } from "@/lib/api";
 import type { Host } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { EngineBadge, EnvTag } from "@/components/shared";
@@ -311,7 +312,11 @@ export function ResourceTree({
 
       <div className="flex items-center gap-1.5 border-t border-border-subtle px-2 py-1.5 text-[11px] text-quaternary">
         <CircleOff className="h-3 w-3" />
-        未连接 · 本地模式
+        {isTauri
+          ? Object.keys(sessions).length > 0
+            ? `已连接后端 · ${Object.keys(sessions).length} 个会话`
+            : "已连接后端 · 无活跃会话"
+          : "本地模式（mock 数据）"}
       </div>
     </aside>
   );
