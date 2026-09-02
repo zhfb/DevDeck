@@ -13,7 +13,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
-import { useContainerAction, useContainers, useEngines } from "@/lib/queries";
+import { useContainerAction, useContainerCreate, useContainers, useEngines } from "@/lib/queries";
 import {
   cn,
   containerStatusDot,
@@ -141,6 +141,7 @@ export default function ContainersPanel(_props: PanelProps) {
     engineFilter === "all" ? undefined : engineFilter
   );
   const containerAction = useContainerAction();
+  const containerCreate = useContainerCreate();
   const { openTab, setBottomPanel } = useWorkspace();
 
   const [confirmDelete, setConfirmDelete] = useState<{
@@ -257,12 +258,32 @@ export default function ContainersPanel(_props: PanelProps) {
         ? "indeterminate"
         : false;
 
-  const submitRunPlaceholder = () => {
-    setRunOpen(false);
-    setRunName("");
-    setRunImage("");
-    setRunPorts("");
-    toast.success("功能开发中：已创建运行任务");
+  // P0: 运行新容器表单 — create + start a container on the target engine.
+  const submitRun = () => {
+    const engineId = engineFilter !== "all" ? engineFilter : engines?.[0]?.id;
+    if (!engineId) {
+      toast.error("没有可用 Docker 引擎", { description: "请先确认本地引擎（OrbStack/Docker/Colima/Podman）已启动" });
+      return;
+    }
+    if (!runImage.trim()) return;
+    containerCreate.mutate(
+      {
+        engineId,
+        name: runName.trim() || `devdeck-${Date.now().toString(36)}`,
+        image: runImage.trim(),
+        ports: runPorts.trim() || undefined,
+      },
+      {
+        onSuccess: (id) => {
+          toast.success(`已启动容器 ${runName.trim() || id}`);
+          setRunOpen(false);
+          setRunName("");
+          setRunImage("");
+          setRunPorts("");
+        },
+        onError: (e) => toast.error("运行容器失败", { description: String(e) }),
+      }
+    );
   };
 
   return (
@@ -563,7 +584,7 @@ export default function ContainersPanel(_props: PanelProps) {
             <Button variant="secondary" size="md" onClick={() => setRunOpen(false)}>
               取消
             </Button>
-            <Button variant="primary" size="md" disabled={!runImage.trim()} onClick={submitRunPlaceholder}>
+            <Button variant="primary" size="md" disabled={!runImage.trim()} onClick={submitRun}>
               运行
             </Button>
           </DialogFooter>

@@ -431,6 +431,105 @@ pub async fn networks_list(state: State<'_, AppState>, engine_id: Option<String>
 }
 
 // ---------------------------------------------------------------------------
+// container create (P0: 运行新容器表单)
+// ---------------------------------------------------------------------------
+#[tauri::command]
+pub async fn containers_create(
+    state: State<'_, AppState>,
+    engine_id: String,
+    name: String,
+    image: String,
+    ports: Option<String>,
+) -> CmdResult<String> {
+    state
+        .docker
+        .create_container(&engine_id, &name, &image, ports.as_deref().unwrap_or(""))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// volumes (P1: 卷创建/删除)
+// ---------------------------------------------------------------------------
+#[tauri::command]
+pub async fn volumes_create(
+    state: State<'_, AppState>,
+    engine_id: String,
+    name: String,
+    driver: Option<String>,
+) -> CmdResult<()> {
+    state
+        .docker
+        .create_volume(&engine_id, &name, driver.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn volumes_remove(state: State<'_, AppState>, engine_id: String, name: String) -> CmdResult<()> {
+    state
+        .docker
+        .remove_volume(&engine_id, &name)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// networks (P2: 网络创建/删除)
+// ---------------------------------------------------------------------------
+#[tauri::command]
+pub async fn networks_create(
+    state: State<'_, AppState>,
+    engine_id: String,
+    name: String,
+    driver: Option<String>,
+) -> CmdResult<()> {
+    state
+        .docker
+        .create_network(&engine_id, &name, driver.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn networks_remove(state: State<'_, AppState>, engine_id: String, id: String) -> CmdResult<()> {
+    state
+        .docker
+        .remove_network(&engine_id, &id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// host processes (P2: 主机进程查看)
+// ---------------------------------------------------------------------------
+#[tauri::command]
+pub async fn host_processes(state: State<'_, AppState>, host_id: String) -> CmdResult<Vec<crate::models::HostProcess>> {
+    state.ssh.list_processes(&host_id).await.map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// snippets (P1: 常用命令库)
+// ---------------------------------------------------------------------------
+#[tauri::command]
+pub async fn snippets_list(state: State<'_, AppState>) -> CmdResult<Vec<crate::models::Snippet>> {
+    let db = state.db.lock().await;
+    db.list_snippets().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn snippets_save(state: State<'_, AppState>, snippet: crate::models::Snippet) -> CmdResult<()> {
+    let db = state.db.lock().await;
+    db.upsert_snippet(&snippet).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn snippets_delete(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    let db = state.db.lock().await;
+    db.delete_snippet(&id).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // tunnels
 // ---------------------------------------------------------------------------
 #[tauri::command]

@@ -2,12 +2,12 @@
 //! Backed by bollard. Remote engines (Docker over SSH) arrive in a later phase:
 //! the bridge is designed as russh streamlocal tunnel → local temp socket → bollard.
 
-use bollard::container::{ListContainersOptions, LogsOptions, RemoveContainerOptions};
+use bollard::container::{Config, CreateContainerOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions};
 use bollard::exec::{CreateExecOptions, ResizeExecOptions, StartExecOptions, StartExecResults};
 use bollard::image::{ListImagesOptions, RemoveImageOptions};
-use bollard::network::ListNetworksOptions;
-use bollard::volume::ListVolumesOptions;
-use bollard::models::{ContainerSummary, CreateImageInfo, ImageSummary};
+use bollard::network::{CreateNetworkOptions, ListNetworksOptions};
+use bollard::volume::{CreateVolumeOptions, ListVolumesOptions};
+use bollard::models::{ContainerSummary, CreateImageInfo, HostConfig, ImageSummary, PortBinding};
 use bollard::service::EventMessage;
 use bollard::system::EventsOptions;
 use bollard::{Docker, API_DEFAULT_VERSION};
@@ -280,6 +280,111 @@ impl DockerManager {
             }
         }
         Ok(result)
+    }
+
+    // ---- container create (P0: 运行新容器表单) ----
+    /// Create and start a container from an image with a simple port mapping
+    /// spec (`"8080:80, 3000:80/udp"`, host:container). Exposed ports without
+    /// a host mapping are published on random host ports by Docker.
+    pub async fn create_container(
+        &self,
+        engine_id: &str,
+        name: &str,
+        image: &str,
+        ports: &str,
+    ) -> Result<String, DockerError> {
+        let client = self.client(engine_id).await?;
+
+        let mut exposed_ports: HashMap<String, HashMap<(), ()>> = HashMap::new();
+        let mut port_bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
+        for spec in ports.split(',') {
+            let spec = spec.trim();
+            if spec.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = spec.split(':').collect();
+            let (host_port, container_spec) = if parts.len() == 2 {
+                (Some(parts[0]), parts[1])
+            } else {
+                (None, parts[0])
+            };
+            let container_port = container_spec.split('/').next().unwrap_or(container_spec);
+            let proto = if container_spec.contains("udp") { "udp" } else { "tcp" };
+            let key = format!("{container_port}/{proto}");
+            exposed_ports.insert(key.clone(), HashMap::new());
+            if let Some(host) = host_port {
+                port_bindings.insert(
+                    key,
+                    Some(vec![PortBinding {
+                        host_ip: Some("127.0.0.1".to_string()),
+                        host_port: Some(host.to_string()),
+                    }]),
+                );
+            }
+        }
+
+        let config = Config {
+            image: Some(image.to_string()),
+            hostname: Some(name.to_string()),
+            exposed_ports: Some(exposed_ports),
+            host_config: Some(HostConfig {
+                port_bindings: Some(port_bindings),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let options = CreateContainerOptions { name: name.to_string(), platform: None };
+        let created = client.create_container(Some(options), config).await?;
+        client.start_container::<String>(&created.id, None).await?;
+        Ok(created.id)
+    }
+
+    // ---- volumes (P1: 卷创建/删除) ----
+    pub async fn create_volume(
+        &self,
+        engine_id: &str,
+        name: &str,
+        driver: Option<&str>,
+    ) -> Result<(), DockerError> {
+        let client = self.client(engine_id).await?;
+        client
+            .create_volume(CreateVolumeOptions {
+                name: name.to_string(),
+                driver: driver.unwrap_or("local").to_string(),
+                ..Default::default()
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn remove_volume(&self, engine_id: &str, name: &str) -> Result<(), DockerError> {
+        let client = self.client(engine_id).await?;
+        client.remove_volume(name, None).await?;
+        Ok(())
+    }
+
+    // ---- networks (P2: 网络创建/删除) ----
+    pub async fn create_network(
+        &self,
+        engine_id: &str,
+        name: &str,
+        driver: Option<&str>,
+    ) -> Result<(), DockerError> {
+        let client = self.client(engine_id).await?;
+        client
+            .create_network(CreateNetworkOptions {
+                name: name.to_string(),
+                driver: driver.unwrap_or("bridge").to_string(),
+                ..Default::default()
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn remove_network(&self, engine_id: &str, id: &str) -> Result<(), DockerError> {
+        let client = self.client(engine_id).await?;
+        client.remove_network(id).await?;
+        Ok(())
     }
 
     pub async fn pull_image(

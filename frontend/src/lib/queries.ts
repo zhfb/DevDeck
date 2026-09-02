@@ -7,10 +7,14 @@ import type {
   Container,
   DockerEngine,
   DockerImage,
+  DockerNetwork,
+  DockerVolume,
   Host,
   HostGroup,
+  HostProcess,
   HostStats,
   HostStatsHistoryPoint,
+  Snippet,
   Tunnel,
 } from "@/lib/types";
 
@@ -181,5 +185,101 @@ export function usePullImage() {
         detail: "等待 Docker 返回进度…",
       });
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Volumes / Networks (P1/P2)
+// ---------------------------------------------------------------------------
+export function useVolumes(engineId?: string) {
+  const mode = usePower((s) => s.mode);
+  return useQuery({
+    queryKey: ["volumes", engineId ?? "all"],
+    queryFn: () => invoke<DockerVolume[]>("volumes.list", engineId ? { engineId } : {}),
+    refetchInterval: powerInterval(mode, 15_000, 60_000),
+    refetchIntervalInBackground: true,
+  });
+}
+
+export function useNetworks(engineId?: string) {
+  const mode = usePower((s) => s.mode);
+  return useQuery({
+    queryKey: ["networks", engineId ?? "all"],
+    queryFn: () => invoke<DockerNetwork[]>("networks.list", engineId ? { engineId } : {}),
+    refetchInterval: powerInterval(mode, 15_000, 60_000),
+    refetchIntervalInBackground: true,
+  });
+}
+
+export function useVolumeAction() {
+  const queryClient = qc();
+  return useMutation({
+    mutationFn: ({ action, name, engineId }: { action: "create" | "remove"; name: string; engineId?: string }) =>
+      invoke(action === "create" ? "volumes.create" : "volumes.remove", { name, engineId }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["volumes"] }),
+  });
+}
+
+export function useNetworkAction() {
+  const queryClient = qc();
+  return useMutation({
+    mutationFn: ({ action, id, name, engineId }: { action: "create" | "remove"; id?: string; name?: string; engineId?: string }) =>
+      invoke(action === "create" ? "networks.create" : "networks.remove", action === "create" ? { name, engineId } : { id, engineId }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["networks"] }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Container create (P0: 运行新容器表单)
+// ---------------------------------------------------------------------------
+export function useContainerCreate() {
+  const queryClient = qc();
+  return useMutation({
+    mutationFn: ({ engineId, name, image, ports }: { engineId: string; name: string; image: string; ports?: string }) =>
+      invoke("containers.create", { engineId, name, image, ports }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["containers"] });
+      void queryClient.invalidateQueries({ queryKey: ["images"] });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Host processes (P2)
+// ---------------------------------------------------------------------------
+export function useHostProcesses(hostId: string | null) {
+  const mode = usePower((s) => s.mode);
+  return useQuery({
+    queryKey: ["host-processes", hostId],
+    queryFn: () => invoke<HostProcess[]>("host.processes", { hostId }),
+    enabled: !!hostId,
+    refetchInterval: powerInterval(mode, 10_000, 60_000),
+    refetchIntervalInBackground: true,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Snippets (P1)
+// ---------------------------------------------------------------------------
+export function useSnippets() {
+  return useQuery({
+    queryKey: ["snippets"],
+    queryFn: () => invoke<Snippet[]>("snippets.list"),
+  });
+}
+
+export function useSnippetSave() {
+  const queryClient = qc();
+  return useMutation({
+    mutationFn: (snippet: Snippet) => invoke("snippets.save", { snippet }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["snippets"] }),
+  });
+}
+
+export function useSnippetDelete() {
+  const queryClient = qc();
+  return useMutation({
+    mutationFn: (id: string) => invoke("snippets.delete", { id }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["snippets"] }),
   });
 }

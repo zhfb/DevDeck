@@ -563,6 +563,18 @@ impl SshManager {
         self.host_by_session.lock().await.values().cloned().collect()
     }
 
+    /// 主机进程列表（P2）— 复用活跃 SSH 会话执行 `ps`，解析为结构化数据。
+    /// 需主机当前存在连接（与无 Agent 监控一致的前置条件）。
+    pub async fn list_processes(&self, host_id: &str) -> Result<Vec<crate::models::HostProcess>, SshError> {
+        let output = self
+            .exec_for_host(
+                host_id,
+                "ps -eo pid,ppid,user,%cpu,%mem,rss,etime,args --sort=-%cpu | head -100",
+            )
+            .await?;
+        Ok(parse_processes(host_id, &output))
+    }
+
     pub async fn start_remote_forward(
         &self,
         host_id: &str,
@@ -661,4 +673,51 @@ impl SshManager {
             .map_err(|e| SshError::Connect(e.to_string()))?;
         Ok(())
     }
+}
+
+/// Parse `ps -eo pid,ppid,user,%cpu,%mem,rss,etime,args` output.
+/// The command (last column) may contain spaces, so it is joined from the
+/// remaining tokens after the fixed-width numeric columns.
+fn parse_processes(host_id: &str, output: &str) -> Vec<crate::models::HostProcess> {
+    let mut out = Vec::new();
+    for line in output.lines().skip(1) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut it = line.split_whitespace();
+        let (Some(pid), Some(ppid), Some(user), Some(cpu), Some(mem), Some(rss), Some(etime)) = (
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+        ) else {
+            continue;
+        };
+        let command = it.collect::<Vec<_>>().join(" ");
+        let (Ok(pid), Ok(ppid), Ok(cpu_percent), Ok(mem_percent), Ok(rss_kb)) = (
+            pid.parse::<u32>(),
+            ppid.parse::<u32>(),
+            cpu.parse::<f64>(),
+            mem.parse::<f64>(),
+            rss.parse::<u64>(),
+        ) else {
+            continue;
+        };
+        out.push(crate::models::HostProcess {
+            host_id: host_id.to_string(),
+            pid,
+            ppid,
+            user: user.to_string(),
+            cpu_percent,
+            mem_percent,
+            rss_kb,
+            etime: etime.to_string(),
+            command,
+        });
+    }
+    out
 }

@@ -11,7 +11,7 @@ import {
   Waypoints,
 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
-import { useHosts, useHostStats, useHostStatsHistory, useTunnels } from "@/lib/queries";
+import { useHosts, useHostProcesses, useHostStats, useHostStatsHistory, useTunnels } from "@/lib/queries";
 import { useLive } from "@/stores/live";
 import { useWorkspace } from "@/stores/workspace";
 import { cn, formatBytes, formatDuration, formatPercent, timeAgo } from "@/lib/utils";
@@ -133,6 +133,7 @@ export default function HostDetail({ onOpenPanel, hostId }: PanelProps & { hostI
   const { data: stats, isLoading: statsLoading } = useHostStats(hostId ?? null);
   const { data: history, isLoading: historyLoading } = useHostStatsHistory(hostId ?? null);
   const { data: tunnels } = useTunnels();
+  const { data: processes, isLoading: processesLoading } = useHostProcesses(hostId ?? null);
   const { hostOnline } = useLive();
   const { openTab } = useWorkspace();
 
@@ -233,6 +234,7 @@ export default function HostDetail({ onOpenPanel, hostId }: PanelProps & { hostI
             <TabsTrigger value="monitor">监控</TabsTrigger>
             <TabsTrigger value="containers">容器</TabsTrigger>
             <TabsTrigger value="tunnels">隧道</TabsTrigger>
+            <TabsTrigger value="processes">进程</TabsTrigger>
             <TabsTrigger value="system">系统信息</TabsTrigger>
             <TabsTrigger value="sessions">会话历史</TabsTrigger>
           </TabsList>
@@ -328,6 +330,60 @@ export default function HostDetail({ onOpenPanel, hostId }: PanelProps & { hostI
                         </TableRow>
                       );
                     })}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </TabsContent>
+
+          {/* 主机进程 — P2: 通过活跃 SSH 会话执行 ps 获取 */}
+          <TabsContent value="processes" className="mt-3">
+            {processesLoading ? (
+              <div className="p-2">
+                {Array.from({ length: 5 }, (_, i) => (
+                  <Skeleton key={i} className="mb-2 h-9 w-full" />
+                ))}
+              </div>
+            ) : !processes || processes.length === 0 ? (
+              <div className="rounded-lg border border-border-subtle bg-surface">
+                <EmptyState
+                  icon={Activity}
+                  title="暂无进程数据"
+                  description="需要先建立该主机的 SSH 连接，再查看进程列表。"
+                />
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-16">PID</TableHead>
+                      <TableHead className="w-16">PPID</TableHead>
+                      <TableHead className="w-24">用户</TableHead>
+                      <TableHead className="w-20 text-right">CPU</TableHead>
+                      <TableHead className="w-20 text-right">内存</TableHead>
+                      <TableHead className="w-24 text-right">RSS</TableHead>
+                      <TableHead className="w-24">运行时长</TableHead>
+                      <TableHead>命令</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {processes.map((p) => (
+                      <TableRow key={`${p.pid}-${p.command}`}>
+                        <TableCell className="mono text-secondary">{p.pid}</TableCell>
+                        <TableCell className="mono-caption text-quaternary">{p.ppid}</TableCell>
+                        <TableCell className="text-secondary">{p.user}</TableCell>
+                        <TableCell className="mono text-right text-secondary">{formatPercent(p.cpuPercent)}</TableCell>
+                        <TableCell className="mono text-right text-secondary">{formatPercent(p.memPercent)}</TableCell>
+                        <TableCell className="mono text-right text-secondary">{formatBytes(p.rssKb * 1024)}</TableCell>
+                        <TableCell className="mono-caption text-secondary">{p.etime}</TableCell>
+                        <TableCell>
+                          <span className="mono-caption block max-w-[36rem] truncate text-secondary" title={p.command}>
+                            {p.command}
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
                   </TableBody>
                 </Table>
               </div>

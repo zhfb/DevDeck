@@ -218,6 +218,28 @@ export interface TaskItem {
   finishedAt?: string;
 }
 
+/** Host process from `ps` (P2: 主机进程管理) */
+export interface HostProcess {
+  hostId: string;
+  pid: number;
+  ppid: number;
+  user: string;
+  cpuPercent: number;
+  memPercent: number;
+  rssKb: number;
+  etime: string;
+  command: string;
+}
+
+/** Reusable command snippet (P1: Snippets 快捷命令) */
+export interface Snippet {
+  id: string;
+  title: string;
+  command: string;
+  tags: string;
+  createdAt: string;
+}
+
 export interface LogLine {
   id: string;
   stream: "stdout" | "stderr" | "system";

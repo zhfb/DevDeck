@@ -232,6 +232,37 @@ pub struct SftpEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Host processes (P2: 主机进程查看/kill)
+// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostProcess {
+    pub host_id: String,
+    pub pid: u32,
+    pub ppid: u32,
+    pub user: String,
+    pub cpu_percent: f64,
+    pub mem_percent: f64,
+    pub rss_kb: u64,
+    pub etime: String,
+    pub command: String,
+}
+
+// ---------------------------------------------------------------------------
+// Snippets (P1: 常用命令库 + 变量替换)
+// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Snippet {
+    pub id: String,
+    pub title: String,
+    pub command: String,
+    #[serde(default)]
+    pub tags: String,
+    pub created_at: String,
+}
+
+// ---------------------------------------------------------------------------
 // Known hosts (TOFU)
 // ---------------------------------------------------------------------------
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

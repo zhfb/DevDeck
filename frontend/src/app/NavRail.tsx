@@ -1,4 +1,4 @@
-import { LayoutDashboard, Boxes, Server, Image as ImageIcon, Waypoints, Activity, ListTodo, Settings, Search, Moon, Sun, Command, FolderTree } from "lucide-react";
+import { LayoutDashboard, Boxes, Server, Image as ImageIcon, Waypoints, Activity, ListTodo, Settings, Search, Moon, Sun, Command, FolderTree, Database, Network as NetworkIcon, TerminalSquare } from "lucide-react";
 import { useWorkspace } from "@/stores/workspace";
 import { useUi } from "@/stores/workspace";
 import { cn } from "@/lib/utils";
@@ -11,6 +11,9 @@ const NAV_ITEMS = [
   { id: "sftp", label: "SFTP", icon: FolderTree },
   { id: "containers", label: "容器", icon: Boxes },
   { id: "images", label: "镜像", icon: ImageIcon },
+  { id: "volumes", label: "卷", icon: Database },
+  { id: "networks", label: "网络", icon: NetworkIcon },
+  { id: "snippets", label: "片段", icon: TerminalSquare },
   { id: "tunnels", label: "隧道", icon: Waypoints },
   { id: "monitor", label: "监控", icon: Activity },
   { id: "tasks", label: "任务", icon: ListTodo },

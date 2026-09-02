@@ -18,8 +18,10 @@ import type {
   DockerVolume,
   Host,
   HostGroup,
+  HostProcess,
   HostStats,
   HostStatsHistoryPoint,
+  Snippet,
   SshSession,
   Tunnel,
 } from "./types";
@@ -210,8 +212,7 @@ const mockImages: DockerImage[] = [
   { id: "sha256:y7z8…a9", repoTag: "<none>:<none>", size: 340_000_000, created: iso(86400_000 * 45), engineId: "eng-orb" },
 ];
 
-const mockTunnels: Tunnel[] = [
-  {
+const mockTunnels: Tunnel[] = [  {
     id: "tun-1",
     name: "docker.sock → 香港",
     type: "local",
@@ -250,6 +251,29 @@ const mockTunnels: Tunnel[] = [
     remotePort: 8080,
     status: "stopped",
   },
+];
+
+const mockVolumes: DockerVolume[] = [
+  { id: "vol-data", name: "pgdata", engineId: "eng-orb", driver: "local", mountpoint: "/var/lib/docker/volumes/pgdata/_data", scope: "local" },
+  { id: "vol-cache", name: "redis-cache-data", engineId: "eng-orb", driver: "local", mountpoint: "/var/lib/docker/volumes/redis-cache-data/_data", scope: "local" },
+];
+
+const mockNetworks: DockerNetwork[] = [
+  { id: "nw-bridge", name: "bridge", engineId: "eng-orb", driver: "bridge", scope: "local", containers: 3 },
+  { id: "nw-app", name: "app-net", engineId: "eng-orb", driver: "bridge", scope: "local", containers: 2 },
+];
+
+const mockProcesses: HostProcess[] = [
+  { hostId: "h-ali-hk", pid: 1, ppid: 0, user: "root", cpuPercent: 0.0, memPercent: 0.1, rssKb: 8_192, etime: "21:03:11", command: "/sbin/init" },
+  { hostId: "h-ali-hk", pid: 1284, ppid: 1, user: "root", cpuPercent: 23.1, memPercent: 4.2, rssKb: 85_000, etime: "02:11:05", command: "nginx: worker process" },
+  { hostId: "h-ali-hk", pid: 1830, ppid: 1, user: "postgres", cpuPercent: 1.8, memPercent: 9.4, rssKb: 192_000, etime: "02:11:05", command: "postgres -D /var/lib/postgresql/16/main" },
+  { hostId: "h-ali-hk", pid: 2105, ppid: 1284, user: "root", cpuPercent: 0.4, memPercent: 1.1, rssKb: 22_000, etime: "02:10:58", command: "sshd: root@pts/0" },
+];
+
+const mockSnippets: Snippet[] = [
+  { id: "sn-1", title: "查看磁盘占用", command: "df -h && echo --- && du -sh /* 2>/dev/null | sort -rh | head", tags: "磁盘,运维", createdAt: iso(86400_000 * 3) },
+  { id: "sn-2", title: "Docker 清理悬空镜像", command: "docker image prune -af", tags: "docker,清理", createdAt: iso(86400_000 * 2) },
+  { id: "sn-3", title: "查看最近日志", command: "journalctl -n 50 --no-pager", tags: "日志,排查", createdAt: iso(3600_000 * 20) },
 ];
 
 const mockHostStats = new Map<string, HostStats>();
@@ -316,8 +340,10 @@ export const mockHandlers: Record<string, (a: any) => unknown> = {
   "containers.get": async ({ id }: { id: string }) => mockContainers.find((c) => c.id === id) ?? null,
   "images.list": async ({ engineId }: { engineId?: string }) =>
     engineId ? mockImages.filter((i) => i.engineId === engineId) : mockImages,
-  "volumes.list": async () => [] as DockerVolume[],
-  "networks.list": async () => [] as DockerNetwork[],
+  "volumes.list": async () => mockVolumes,
+  "networks.list": async () => mockNetworks,
+  "host.processes": async ({ hostId }: { hostId: string }) => mockProcesses.filter((p) => p.hostId === hostId),
+  "snippets.list": async () => mockSnippets,
   "tunnels.list": async () => mockTunnels,
   "tunnels.get": async ({ id }: { id: string }) => mockTunnels.find((t) => t.id === id) ?? null,
   "ssh.sessions": async () => [] as SshSession[],
@@ -430,6 +456,56 @@ mockHandlers["containers.remove"] = async ({ id }: { id: string }) => {
   await sleep(700);
   const i = mockContainers.findIndex((x) => x.id === id);
   if (i >= 0) mockContainers.splice(i, 1);
+  return { ok: true };
+};
+mockHandlers["containers.create"] = async ({ name, image, ports }: { name: string; image: string; ports?: string }) => {
+  await sleep(700);
+  mockContainers.push({
+    id: `new-${Date.now().toString(36)}`,
+    name,
+    image,
+    state: "running",
+    status: "Up just now",
+    engineId: "eng-orb",
+    ports: [],
+    created: new Date().toISOString(),
+    startedAt: new Date().toISOString(),
+  });
+  return `new-${Date.now().toString(36)}`;
+};
+mockHandlers["volumes.create"] = async ({ name, driver }: { name: string; driver?: string }) => {
+  await sleep(400);
+  mockVolumes.push({ id: `vol-${Date.now().toString(36)}`, name, engineId: "eng-orb", driver: driver ?? "local", mountpoint: "", scope: "local" });
+  return { ok: true };
+};
+mockHandlers["volumes.remove"] = async ({ name }: { name: string }) => {
+  await sleep(400);
+  const i = mockVolumes.findIndex((v) => v.name === name);
+  if (i >= 0) mockVolumes.splice(i, 1);
+  return { ok: true };
+};
+mockHandlers["networks.create"] = async ({ name, driver }: { name: string; driver?: string }) => {
+  await sleep(400);
+  mockNetworks.push({ id: `nw-${Date.now().toString(36)}`, name, engineId: "eng-orb", driver: driver ?? "bridge", scope: "local", containers: 0 });
+  return { ok: true };
+};
+mockHandlers["networks.remove"] = async ({ id }: { id: string }) => {
+  await sleep(400);
+  const i = mockNetworks.findIndex((n) => n.id === id);
+  if (i >= 0) mockNetworks.splice(i, 1);
+  return { ok: true };
+};
+mockHandlers["snippets.save"] = async ({ snippet }: { snippet: Snippet }) => {
+  await sleep(200);
+  const i = mockSnippets.findIndex((s) => s.id === snippet.id);
+  if (i >= 0) mockSnippets[i] = snippet;
+  else mockSnippets.unshift(snippet);
+  return { ok: true };
+};
+mockHandlers["snippets.delete"] = async ({ id }: { id: string }) => {
+  await sleep(200);
+  const i = mockSnippets.findIndex((s) => s.id === id);
+  if (i >= 0) mockSnippets.splice(i, 1);
   return { ok: true };
 };
 mockHandlers["tunnels.start"] = async ({ id }: { id: string }) => {

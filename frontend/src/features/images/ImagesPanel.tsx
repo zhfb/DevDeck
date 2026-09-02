@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Download, Layers, Play, RefreshCw, Trash2 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
-import { useEngines, useImages, usePullImage } from "@/lib/queries";
+import { useContainerCreate, useEngines, useImages, usePullImage } from "@/lib/queries";
 import { invoke } from "@/lib/api";
 import { cn, formatBytes, formatDateTime, truncateId } from "@/lib/utils";
 import type { DockerImage } from "@/lib/types";
@@ -58,6 +58,7 @@ export default function ImagesPanel(_props: PanelProps) {
     engineFilter === "all" ? undefined : engineFilter
   );
   const pullImage = usePullImage();
+  const containerCreate = useContainerCreate();
   const queryClient = useQueryClient();
 
   const [pullOpen, setPullOpen] = useState(false);
@@ -108,12 +109,32 @@ export default function ImagesPanel(_props: PanelProps) {
     setRunOpen(true);
   };
 
-  const submitRunPlaceholder = () => {
-    setRunOpen(false);
-    setRunName("");
-    setRunImage("");
-    setRunPorts("");
-    toast.success("功能开发中：已创建运行任务");
+  // P0: 运行新容器表单 — create + start a container from the selected image.
+  const submitRun = () => {
+    const engineId = engineFilter !== "all" ? engineFilter : engines?.[0]?.id;
+    if (!engineId) {
+      toast.error("没有可用 Docker 引擎", { description: "请先确认本地引擎（OrbStack/Docker/Colima/Podman）已启动" });
+      return;
+    }
+    if (!runImage.trim()) return;
+    containerCreate.mutate(
+      {
+        engineId,
+        name: runName.trim() || `devdeck-${Date.now().toString(36)}`,
+        image: runImage.trim(),
+        ports: runPorts.trim() || undefined,
+      },
+      {
+        onSuccess: (id) => {
+          toast.success(`已启动容器 ${runName.trim() || id}`);
+          setRunOpen(false);
+          setRunName("");
+          setRunImage("");
+          setRunPorts("");
+        },
+        onError: (e) => toast.error("运行容器失败", { description: String(e) }),
+      }
+    );
   };
 
   return (
@@ -337,7 +358,7 @@ export default function ImagesPanel(_props: PanelProps) {
             <Button variant="secondary" size="md" onClick={() => setRunOpen(false)}>
               取消
             </Button>
-            <Button variant="primary" size="md" disabled={!runImage.trim()} onClick={submitRunPlaceholder}>
+            <Button variant="primary" size="md" disabled={!runImage.trim()} onClick={submitRun}>
               运行
             </Button>
           </DialogFooter>

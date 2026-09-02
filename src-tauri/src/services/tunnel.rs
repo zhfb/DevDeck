@@ -31,16 +31,32 @@ pub struct TunnelManager {
     db: Arc<Mutex<AppDb>>,
     ssh: Arc<SshManager>,
     tasks: Arc<Mutex<std::collections::HashMap<String, JoinHandle<()>>>>,
+    /// tunnel_id → (bytes_local_to_remote, bytes_remote_to_local) live counters
+    counters: Arc<Mutex<std::collections::HashMap<String, (u64, u64)>>>,
 }
 
 impl TunnelManager {
     pub fn new(db: Arc<Mutex<AppDb>>, ssh: Arc<SshManager>) -> Self {
-        Self { db, ssh, tasks: Arc::new(Mutex::new(std::collections::HashMap::new())) }
+        Self {
+            db,
+            ssh,
+            tasks: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            counters: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        }
     }
 
     pub async fn list(&self) -> Result<Vec<Tunnel>, TunnelError> {
         let db = self.db.lock().await;
-        Ok(db.list_tunnels()?)
+        let mut tunnels = db.list_tunnels()?;
+        // merge live traffic counters (P1: 端口转发实时流量统计)
+        let counters = self.counters.lock().await;
+        for t in tunnels.iter_mut() {
+            if let Some((bytes_out, bytes_in)) = counters.get(&t.id) {
+                t.bytes_in = Some(*bytes_in);
+                t.bytes_out = Some(*bytes_out);
+            }
+        }
+        Ok(tunnels)
     }
 
     /// Persist a tunnel config (create/update).
@@ -54,6 +70,7 @@ impl TunnelManager {
         if let Some(handle) = self.tasks.lock().await.remove(id) {
             handle.abort();
         }
+        self.counters.lock().await.remove(id);
         let db = self.db.lock().await;
         db.delete_tunnel(id)?;
         Ok(())
@@ -94,6 +111,7 @@ impl TunnelManager {
             .map_err(|e| TunnelError::Forward(e.to_string()))?;
         let ssh = self.ssh.clone();
         let db = self.db.clone();
+        let counters = self.counters.clone();
         let task_id = tunnel.id.clone();
         let host_id = tunnel.host_id.clone();
         let remote_host = tunnel.remote_host.clone();
@@ -104,8 +122,16 @@ impl TunnelManager {
                 let ssh = ssh.clone();
                 let host_id = host_id.clone();
                 let remote_host = remote_host.clone();
+                let counters = counters.clone();
+                let task_id = task_id.clone();
                 tokio::spawn(async move {
-                    let _ = ssh.proxy_local_connection(&host_id, stream, &remote_host, remote_port).await;
+                    // accumulate per-connection bytes into the shared counter
+                    if let Ok((out, input)) = ssh.proxy_local_connection(&host_id, stream, &remote_host, remote_port).await {
+                        let mut c = counters.lock().await;
+                        let entry = c.entry(task_id).or_insert((0, 0));
+                        entry.0 += out;
+                        entry.1 += input;
+                    }
                 });
             }
             if let Ok(db) = db.try_lock() {
@@ -140,6 +166,7 @@ impl TunnelManager {
         if let Some(handle) = self.tasks.lock().await.remove(id) {
             handle.abort();
         }
+        self.counters.lock().await.remove(id);
         let db = self.db.lock().await;
         let mut tunnels = db.list_tunnels()?;
         let t = tunnels

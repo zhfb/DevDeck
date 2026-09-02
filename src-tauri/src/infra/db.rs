@@ -5,7 +5,7 @@ use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use thiserror::Error;
 
-use crate::models::{Host, HostGroup, KnownHostRecord, Tunnel};
+use crate::models::{Host, HostGroup, KnownHostRecord, Snippet, Tunnel};
 
 #[derive(Error, Debug)]
 pub enum DbError {
@@ -101,6 +101,13 @@ impl AppDb {
                 first_seen TEXT NOT NULL,
                 last_seen TEXT NOT NULL,
                 PRIMARY KEY(host, port, key_type)
+            );
+            CREATE TABLE IF NOT EXISTS snippets (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                command TEXT NOT NULL,
+                tags TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
             );
             "#,
         )?;
@@ -329,6 +336,39 @@ impl AppDb {
             "UPDATE known_hosts SET last_seen = ?1 WHERE host = ?2 AND port = ?3 AND key_type = ?4",
             params![ts, host, port, key_type],
         )?;
+        Ok(())
+    }
+
+    // ---- snippets (P1: 常用命令库) ----
+    pub fn list_snippets(&self) -> Result<Vec<Snippet>, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, title, command, tags, created_at FROM snippets ORDER BY created_at DESC")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Snippet {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                command: r.get(2)?,
+                tags: r.get(3)?,
+                created_at: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn upsert_snippet(&self, s: &Snippet) -> Result<(), DbError> {
+        self.conn.execute(
+            "INSERT INTO snippets (id, title, command, tags, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET
+               title=excluded.title, command=excluded.command, tags=excluded.tags",
+            params![s.id, s.title, s.command, s.tags, s.created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_snippet(&self, id: &str) -> Result<(), DbError> {
+        self.conn.execute("DELETE FROM snippets WHERE id = ?1", [id])?;
         Ok(())
     }
 }

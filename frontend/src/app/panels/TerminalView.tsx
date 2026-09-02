@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { isTauri, onEvent, invoke } from "@/lib/api";
+import { onTerminalInsert } from "@/lib/terminalBus";
 import type { SshSession } from "@/lib/types";
 interface TerminalViewProps {
   sessionId?: string;
@@ -107,7 +108,14 @@ export function TerminalView({ sessionId, hostId, containerId, engineId, kind = 
     // input/resize go back via term_input / term_resize commands.
     let unsub: (() => void) | undefined;
     let unsubStatus: (() => void) | undefined;
+    let unsubInsert: (() => void) | undefined;
     let disposed = false;
+    // Snippets (P1): let a SnippetPanel inject text into this pane.
+    if (sessionId) {
+      unsubInsert = onTerminalInsert(sessionId, (text) => {
+        if (!disposed && term) term.paste(text);
+      });
+    }
     if (isTauri && sessionId) {
       onEvent<string>(`term:data:${sessionId}`, (text) => {
         if (!disposed && term) term.write(text);
@@ -213,6 +221,7 @@ export function TerminalView({ sessionId, hostId, containerId, engineId, kind = 
       ro?.disconnect();
       unsub?.();
       unsubStatus?.();
+      unsubInsert?.();
       try {
         term.dispose();
       } catch {
