@@ -168,21 +168,61 @@ impl DockerManager {
                 }
             }
         }
+        drop(meta);
+        drop(engines);
         Ok(found)
     }
 
     pub async fn list_engines(&self) -> Vec<DockerEngine> {
-        let meta = self.meta.lock().await;
-        let mut list: Vec<DockerEngine> = meta.values().cloned().collect();
+        // 先取快照并立即释放 meta 锁，避免与 probe()（先锁 engines 再锁 meta）形成
+        // ABBA 死锁导致 engines.list 永久挂起（表现为前端“未检测到 Docker 引擎”）。
+        let mut list: Vec<DockerEngine> = {
+            let meta = self.meta.lock().await;
+            meta.values().cloned().collect()
+        };
         // refresh counts for reachable engines
         for e in list.iter_mut() {
             if e.reachable {
-                if let Some(client) = self.engines.lock().await.get(&e.id) {
-                    if let Ok(cs) = list_containers_inner(client, &e.id).await {
-                        e.containers = Some(cs.len() as i64);
+                // 用带超时的锁获取 + 超时的容器/镜像列表，确保任何一次 bollard 卡死
+                // 都不会让 engines.list 永久挂起（前端轮询会一直拿不到结果）。
+                let guard = match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    self.engines.lock(),
+                )
+                .await
+                {
+                    Ok(g) => g,
+                    Err(_) => {
+                        tracing::warn!("list_engines: engines lock timeout, skipping counts for {}", e.id);
+                        continue;
                     }
-                    if let Ok(imgs) = list_images_inner(client, &e.id).await {
-                        e.images = Some(imgs.len() as i64);
+                };
+                if let Some(client) = guard.get(&e.id).cloned() {
+                    let cs = match tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        list_containers_inner(&client, &e.id),
+                    )
+                    .await
+                    {
+                        Ok(Ok(c)) => Some(c.len() as i64),
+                        Ok(Err(_)) => None,
+                        Err(_) => None,
+                    };
+                    if let Some(n) = cs {
+                        e.containers = Some(n);
+                    }
+                    let imgs = match tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        list_images_inner(&client, &e.id),
+                    )
+                    .await
+                    {
+                        Ok(Ok(i)) => Some(i.len() as i64),
+                        Ok(Err(_)) => None,
+                        Err(_) => None,
+                    };
+                    if let Some(n) = imgs {
+                        e.images = Some(n);
                     }
                 }
             }
@@ -191,12 +231,10 @@ impl DockerManager {
     }
 
     async fn client(&self, engine_id: &str) -> Result<Docker, DockerError> {
-        self.engines
-            .lock()
-            .await
-            .get(engine_id)
-            .cloned()
-            .ok_or_else(|| DockerError::EngineNotFound(engine_id.to_string()))
+        let g = self.engines.lock().await;
+        let r = g.get(engine_id).cloned().ok_or_else(|| DockerError::EngineNotFound(engine_id.to_string()));
+        drop(g);
+        r
     }
 
     // ---- containers ----
@@ -208,7 +246,11 @@ impl DockerManager {
             }
             None => {
                 let mut out = Vec::new();
-                for eid in self.engines.lock().await.keys().cloned().collect::<Vec<_>>() {
+                // 必须先收集 id 释放 engines 锁，再循环执行 client()/list_containers_inner，
+                // 否则 for 循环头里的临时 MutexGuard 会持锁到循环结束，一旦 bollard 调用
+                // 挂起就会永久占用引擎锁，导致 engines.list / probe 全部阻塞。
+                let ids: Vec<String> = self.engines.lock().await.keys().cloned().collect();
+                for eid in ids {
                     let client = self.client(&eid).await?;
                     out.extend(list_containers_inner(&client, &eid).await?);
                 }
@@ -270,7 +312,9 @@ impl DockerManager {
             }
             None => {
                 let mut out = Vec::new();
-                for eid in self.engines.lock().await.keys().cloned().collect::<Vec<_>>() {
+                // 同上：先收集 id 释放锁，避免持锁执行 bollard 调用。
+                let ids: Vec<String> = self.engines.lock().await.keys().cloned().collect();
+                for eid in ids {
                     let client = self.client(&eid).await?;
                     out.extend(list_images_inner(&client, &eid).await?);
                 }
@@ -598,6 +642,7 @@ impl DockerManager {
             let engine_id = engine_id.clone();
             async move { Some(parse_event(msg.ok()?, engine_id, host_name)) }
         });
+        drop(meta);
         Ok(Box::pin(mapped))
     }
 
@@ -628,8 +673,14 @@ impl DockerManager {
                     tracing::info!(engine_id, "docker events stream connected");
 
                     // Snapshot compensation: full container list on every connect.
-                    match self.list_containers(Some(engine_id)).await {
-                        Ok(containers) => {
+                    // 包超时：个别环境下 bollard 请求可能卡死，不能让事件转发循环被拖住。
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        self.list_containers(Some(engine_id)),
+                    )
+                    .await
+                    {
+                        Ok(Ok(containers)) => {
                             let _ = app.emit(
                                 "docker:snapshot",
                                 serde_json::json!({
@@ -638,8 +689,11 @@ impl DockerManager {
                                 }),
                             );
                         }
-                        Err(e) => {
-                            tracing::warn!(engine_id, err = %e, "docker snapshot emit failed");
+                        Ok(Err(e)) => {
+                            tracing::warn!(engine_id, err = %e, "docker snapshot list failed");
+                        }
+                        Err(_) => {
+                            tracing::warn!(engine_id, "docker snapshot list timed out");
                         }
                     }
 
