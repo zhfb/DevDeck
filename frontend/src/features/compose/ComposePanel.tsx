@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Layers, Play, Square, RotateCw, Download, Hammer, RefreshCw, Trash2 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
-import { useHosts } from "@/lib/queries";
+import { useEngines, useHosts } from "@/lib/queries";
 import { usePalette } from "@/stores/live";
 import { invoke } from "@/lib/api";
 import type { ComposeService } from "@/lib/types";
@@ -27,34 +27,56 @@ import {
 } from "@/components/ui/table";
 import { toast } from "@/components/ui/sonner";
 
+/** 执行目标：本地引擎（本机 docker CLI）或 SSH 远端主机 */
+type ComposeTarget =
+  | { kind: "local"; engineId: string }
+  | { kind: "remote"; hostId: string };
+
 /**
- * Docker Compose 面板（P2）— 经目标主机的 SSH exec 执行 docker compose。
- * 命令：compose_run / compose_ps（后端 services/compose.rs）
+ * Docker Compose 面板（P2）— 目标可为本地引擎（本机执行 docker compose）
+ * 或 SSH 远端主机（经 SSH exec）。命令：compose_run / compose_ps。
  */
 export default function ComposePanel(_props: PanelProps) {
   const { data: hosts } = useHosts();
+  const { data: engines } = useEngines();
   const registerAction = usePalette((s) => s.registerAction);
 
-  const [hostId, setHostId] = useState("");
+  // 本地引擎（排除 ssh-remote）
+  const localEngines = useMemo(
+    () => (engines ?? []).filter((e) => e.kind !== "ssh-remote" && e.reachable),
+    [engines]
+  );
+  // 目标编码：local:<engineId> / remote:<hostId>
+  const [target, setTarget] = useState("");
   const [dir, setDir] = useState("");
   const [file, setFile] = useState("");
   const [services, setServices] = useState<ComposeService[]>([]);
   const [output, setOutput] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const defaultHost = useMemo(() => (hosts ?? [])[0]?.id ?? "", [hosts]);
-  const effectiveHostId = hostId || defaultHost;
+  const defaultTarget = useMemo(
+    () => (localEngines[0] ? `local:${localEngines[0].id}` : hosts?.[0] ? `remote:${hosts[0].id}` : ""),
+    [localEngines, hosts]
+  );
+  const effectiveTarget = target || defaultTarget;
+
+  const resolveTarget = (): ComposeTarget | null => {
+    if (effectiveTarget.startsWith("local:")) return { kind: "local", engineId: effectiveTarget.slice(6) };
+    if (effectiveTarget.startsWith("remote:")) return { kind: "remote", hostId: effectiveTarget.slice(7) };
+    return null;
+  };
 
   const run = useCallback(
     async (args: string[], label: string) => {
-      if (!effectiveHostId) {
-        toast.error("请先选择目标主机");
+      const t = resolveTarget();
+      if (!t) {
+        toast.error("请先选择执行目标");
         return;
       }
       setBusy(label);
       try {
         const res = await invoke<string>("compose_run", {
-          hostId: effectiveHostId,
+          target: t,
           dir: dir.trim() || null,
           file: file.trim() || null,
           args,
@@ -62,7 +84,7 @@ export default function ComposePanel(_props: PanelProps) {
         setOutput(res);
         if (args[0] === "ps") {
           const ps = await invoke<ComposeService[]>("compose_ps", {
-            hostId: effectiveHostId,
+            target: t,
             dir: dir.trim() || null,
             file: file.trim() || null,
           });
@@ -76,7 +98,7 @@ export default function ComposePanel(_props: PanelProps) {
         setBusy(null);
       }
     },
-    [effectiveHostId, dir, file]
+    [effectiveTarget, dir, file]
   );
 
   // 命令面板入口（副作用注册，不能用 useMemo）
@@ -120,27 +142,48 @@ export default function ComposePanel(_props: PanelProps) {
 
   return (
     <div className="flex h-full flex-col">
-      {/* 工具栏：主机 + 目录 + 文件 + 动作 */}
+      {/* 工具栏：目标 + 目录 + 文件 + 动作 */}
       <div className="flex shrink-0 flex-wrap items-end gap-2 border-b border-border-subtle px-4 py-2">
         <div className="flex flex-col gap-1">
-          <Label className="text-[11px]">目标主机</Label>
-          <Select value={effectiveHostId} onValueChange={setHostId}>
-            <SelectTrigger className="h-7 w-40">
-              <SelectValue placeholder="选择主机" />
+          <Label className="text-[11px]">执行目标</Label>
+          <Select value={effectiveTarget} onValueChange={setTarget}>
+            <SelectTrigger className="h-7 w-52">
+              <SelectValue placeholder="选择目标" />
             </SelectTrigger>
             <SelectContent>
-              {(hosts ?? []).length === 0 && (
+              {localEngines.length === 0 && (hosts ?? []).length === 0 && (
                 <SelectItem value="__none__" disabled>
-                  无可用主机
+                  无可用本地引擎 / 主机
+                </SelectItem>
+              )}
+              {localEngines.length > 0 && (
+                <SelectItem value="__local_hdr__" disabled>
+                  本地引擎
+                </SelectItem>
+              )}
+              {localEngines.map((e) => (
+                <SelectItem key={`local:${e.id}`} value={`local:${e.id}`}>
+                  {e.name}
+                </SelectItem>
+              ))}
+              {(hosts ?? []).length > 0 && (
+                <SelectItem value="__remote_hdr__" disabled>
+                  SSH 主机
                 </SelectItem>
               )}
               {(hosts ?? []).map((h) => (
-                <SelectItem key={h.id} value={h.id}>
+                <SelectItem key={`remote:${h.id}`} value={`remote:${h.id}`}>
                   {h.name}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
+          {effectiveTarget.startsWith("local:") && (
+            <span className="text-[10.5px] text-muted">本机执行 docker compose</span>
+          )}
+          {effectiveTarget.startsWith("remote:") && (
+            <span className="text-[10.5px] text-muted">经 SSH 在远端执行</span>
+          )}
         </div>
         <div className="flex flex-col gap-1">
           <Label className="text-[11px]">工作目录（可选）</Label>

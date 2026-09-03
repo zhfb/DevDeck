@@ -90,7 +90,7 @@ pub fn run() {
             let tunnels = Arc::new(TunnelManager::new(db.clone(), ssh.clone()));
             let sftp = Arc::new(SftpManager::new(ssh.clone()));
             let auto_forward = Arc::new(AutoForwardManager::new(db.clone(), docker.clone(), tunnels.clone()));
-            let compose = Arc::new(ComposeManager::new(ssh.clone()));
+            let compose = Arc::new(ComposeManager::new(ssh.clone(), docker.clone()));
             let remote_docker = Arc::new(RemoteDockerManager::new(ssh.clone()));
             let zmodem = Arc::new(ZmodemManager::new(ssh.clone()));
 

@@ -324,7 +324,7 @@ export default function ImagesPanel(_props: PanelProps) {
             <div className="grid gap-1.5">
               <Label>镜像名称</Label>
               <Input
-                placeholder="例如 nginx:latest"
+                placeholder="例如 nginx:latest 或 registry.com/ns/img:tag"
                 value={pullImageName}
                 onChange={(e) => setPullImageName(e.target.value)}
                 onKeyDown={(e) => {

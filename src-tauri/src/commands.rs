@@ -26,7 +26,7 @@ use crate::models::*;
 use crate::services::{
     docker::DockerManager, hostkey::HostKeyResolver, ssh::SshManager, stats::StatsCollector,
     power::{PowerManager, PowerState}, sftp::{SftpManager, TransferDirection, TransferSpec}, tunnel::TunnelManager,
-    auto_forward::AutoForwardManager, compose::{ComposeManager, ComposeService},
+    auto_forward::AutoForwardManager, compose::{ComposeManager, ComposeService, ComposeTarget},
     remote_docker::{RemoteDockerManager, RemoteDockerMount},
     zmodem::ZmodemManager,
     local_pty::LocalPtyManager,
@@ -1056,18 +1056,18 @@ pub async fn auto_forward_get(
     Ok(state.auto_forward.get(&engine_id).await)
 }
 
-// docker compose (P1)
+// docker compose (P1) — target: 本地引擎或 SSH 远端
 #[tauri::command]
 pub async fn compose_run(
     state: State<'_, AppState>,
-    host_id: String,
+    target: ComposeTarget,
     dir: Option<String>,
     file: Option<String>,
     args: Vec<String>,
 ) -> CmdResult<String> {
     state
         .compose
-        .run(&host_id, dir.as_deref(), file.as_deref(), &args)
+        .run(&target, dir.as_deref(), file.as_deref(), &args)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1075,13 +1075,13 @@ pub async fn compose_run(
 #[tauri::command]
 pub async fn compose_ps(
     state: State<'_, AppState>,
-    host_id: String,
+    target: ComposeTarget,
     dir: Option<String>,
     file: Option<String>,
 ) -> CmdResult<Vec<ComposeService>> {
     state
         .compose
-        .ps(&host_id, dir.as_deref(), file.as_deref())
+        .ps(&target, dir.as_deref(), file.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
