@@ -426,7 +426,6 @@ export const mockHandlers: Record<string, (a: any) => unknown> = {
   "host_processes": async ({ hostId }: { hostId: string }) => mockProcesses.filter((p) => p.hostId === hostId),
   "snippets_list": async () => mockSnippets,
   "tunnels_list": async () => mockTunnels,
-  "tunnels_get": async ({ id }: { id: string }) => mockTunnels.find((t) => t.id === id) ?? null,
   "ssh_sessions": async () => [] as SshSession[],
   "ssh_auth_respond": async () => ({ ok: true }),
   "ssh_broadcast": async ({ sessionIds }: { sessionIds: string[] }) => sessionIds.length,

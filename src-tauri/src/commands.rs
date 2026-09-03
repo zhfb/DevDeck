@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 
@@ -399,14 +399,18 @@ pub async fn hosts_save(
 #[tauri::command]
 pub async fn hosts_delete(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     let db = state.db.lock().await;
-    // 删除主机前先清理 Keychain 中的密码与私钥，避免凭据残留（review-backend-core C1）
-    if let Ok(Some(host)) = db.get_host(&id) {
-        if let Some(account) = host.credential_ref.as_deref() {
-            let _ = crate::infra::keychain::delete_password(account);
-            let _ = crate::infra::keychain::delete_password(&format!("{account}:private-key"));
-        }
+    // 先删 DB 记录，成功后再清理 Keychain 凭据：
+    // 若 DB 删除失败，主机仍存在但凭据不能提前销毁，避免“删除失败却丢了凭据”（review Important）
+    let account = match db.get_host(&id) {
+        Ok(Some(host)) => host.credential_ref,
+        _ => None,
+    };
+    db.delete_host(&id).map_err(|e| e.to_string())?;
+    if let Some(account) = account.as_deref() {
+        let _ = crate::infra::keychain::delete_password(account);
+        let _ = crate::infra::keychain::delete_password(&format!("{account}:private-key"));
     }
-    db.delete_host(&id).map_err(|e| e.to_string())
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -822,9 +826,10 @@ pub async fn idle_lock_unlock(state: State<'_, AppState>, pin: String) -> CmdRes
     let failures = PIN_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
     if failures >= PIN_MAX_FAILURES {
         let extra = failures - PIN_MAX_FAILURES;
-        let lock_ms = (PIN_LOCKOUT_STEP as u64 * (extra as u64 + 1)) * 1000;
+        let lock_ms = (PIN_LOCKOUT_STEP * (extra as u64 + 1)) * 1000;
         PIN_LOCKED_UNTIL.store(now + lock_ms, Ordering::Relaxed);
-        PIN_FAILURES.store(0, Ordering::Relaxed);
+        // 注意：此处不要重置 PIN_FAILURES。累计失败次数用于让每次锁定期递增
+        // （30s → 60s → 90s…），仅在成功解锁时归零（见上方 ok 分支）。
     }
     Ok(false)
 }

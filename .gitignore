@@ -23,5 +23,3 @@ artifacts/
 
 # Tauri updater 签名私钥（绝不可提交；公钥在 tauri.conf.json）
 src-tauri/.signing/
-*.tsbuildinfo
-artifacts/

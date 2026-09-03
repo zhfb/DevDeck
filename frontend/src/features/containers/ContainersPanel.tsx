@@ -323,6 +323,19 @@ export default function ContainersPanel(_props: PanelProps) {
       return;
     }
     if (!runImage.trim()) return;
+
+    // 内存/CPU 输入校验：非数字或负数直接拦截，避免静默变成“无限制”（review Important）
+    const memoryMb = runMemoryMb.trim() ? Number(runMemoryMb) : undefined;
+    const cpus = runCpus.trim() ? Number(runCpus) : undefined;
+    if (memoryMb !== undefined && (!Number.isFinite(memoryMb) || memoryMb < 0)) {
+      toast.error("内存上限无效", { description: "请输入 ≥0 的数值（单位 MB）" });
+      return;
+    }
+    if (cpus !== undefined && (!Number.isFinite(cpus) || cpus <= 0)) {
+      toast.error("CPU 限制无效", { description: "请输入 >0 的核数，例如 1 或 0.5" });
+      return;
+    }
+
     containerCreate.mutate(
       {
         engineId,
@@ -331,14 +344,14 @@ export default function ContainersPanel(_props: PanelProps) {
         cmd: runCmd.trim() || undefined,
         entrypoint: runEntrypoint.trim() || undefined,
         env: runEnv
-          .map((e) => (e.key.trim() ? `${e.key.trim()}=${e.value}` : null))
+          .map((e) => (e.key.trim() ? `${e.key.trim()}=${e.value.trim()}` : null))
           .filter((e): e is string => e !== null),
         ports: runPorts.trim() || undefined,
         volumes: runVolumes.map((v) => v.trim()).filter((v) => v.length > 0),
         network: runNetwork.trim() || undefined,
         restart: runRestart,
-        memoryMb: runMemoryMb.trim() ? Number(runMemoryMb) : undefined,
-        cpus: runCpus.trim() ? Number(runCpus) : undefined,
+        memoryMb,
+        cpus,
       },
       {
         onSuccess: (id) => {

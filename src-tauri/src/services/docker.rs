@@ -32,6 +32,8 @@ pub enum DockerError {
     EngineNotFound(String),
     #[error("no local docker engine detected")]
     NoEngine,
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -448,22 +450,36 @@ impl DockerManager {
                 maximum_retry_count: None,
             }),
             other => {
-                return Err(DockerError::Bollard(bollard::errors::Error::IOError {
-                    err: std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("unsupported restart policy: {other}"),
-                    ),
-                }));
+                return Err(DockerError::InvalidInput(format!(
+                    "不支持的重启策略: {other}"
+                )));
             }
         };
 
-        // 内存/CPU 限制
-        let memory = spec.memory_mb.map(|mb| (mb as i64) * 1024 * 1024);
-        let nano_cpus = spec.cpus.map(|c| (c * 1_000_000_000.0) as i64);
+        // 内存/CPU 限制：拒绝非法值（NaN/负数/超范围），前端亦校验，此处兜底（review Important）
+        let memory = match spec.memory_mb {
+            Some(0) => None,
+            Some(mb) => {
+                let bytes = (mb as i128)
+                    .checked_mul(1024 * 1024)
+                    .ok_or_else(|| DockerError::InvalidInput("内存上限数值过大".to_string()))?;
+                if bytes > i64::MAX as i128 {
+                    return Err(DockerError::InvalidInput("内存上限数值过大".to_string()));
+                }
+                Some(bytes as i64)
+            }
+            None => None,
+        };
+        let nano_cpus = match spec.cpus {
+            Some(c) if c.is_finite() && c > 0.0 => Some((c * 1_000_000_000.0) as i64),
+            Some(c) => return Err(DockerError::InvalidInput(format!("无效的 CPU 限制: {c}"))),
+            None => None,
+        };
 
         let config = Config {
             image: Some(spec.image.clone()),
-            hostname: Some(spec.name.clone()),
+            // hostname 遵循 RFC 1123：容器名中的下划线替换为连字符（review Minor）
+            hostname: Some(spec.name.replace('_', "-")),
             cmd,
             entrypoint,
             env: spec.env.clone(),
@@ -481,7 +497,11 @@ impl DockerManager {
         };
         let options = CreateContainerOptions { name: spec.name.clone(), platform: None };
         let created = client.create_container(Some(options), config).await?;
-        client.start_container::<String>(&created.id, None).await?;
+        if let Err(e) = client.start_container::<String>(&created.id, None).await {
+            // 启动失败时回滚刚创建的容器，避免残留 Created 状态容器（review Important）
+            let _ = client.remove_container(&created.id, None).await;
+            return Err(e.into());
+        }
         Ok(created.id)
     }
 

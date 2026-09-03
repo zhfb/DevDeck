@@ -1,9 +1,17 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useWorkspace } from "@/stores/workspace";
+
+// 包装真实 invoke：既保留 mockHandlers 行为，又能断言各命令是否被正确调用（review Important）
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return { ...actual, invoke: vi.fn(actual.invoke) };
+});
+import { invoke } from "@/lib/api";
 
 describe("workspace.openTab 去重逻辑", () => {
   beforeEach(() => {
     useWorkspace.setState({ tabs: [], activeTabId: null });
+    vi.clearAllMocks();
   });
 
   it("dashboard 面板重复打开复用同一 tab", () => {
@@ -126,8 +134,9 @@ describe("workspace.openTab 去重逻辑", () => {
       env: "none",
     });
     useWorkspace.getState().closeTab(id);
-    // 通过 mock 计数：ssh_disconnect 应被调用一次（此处验证 tab 已移除且调用不抛错）
     expect(useWorkspace.getState().tabs.some((t) => t.id === id)).toBe(false);
+    // 断言后端连接被释放：ssh_disconnect 以正确 sessionId 被调用一次
+    expect(invoke).toHaveBeenCalledWith("ssh_disconnect", { sessionId: "sess-1" });
   });
 
   it("openLocalTerminal 重复调用复用同一 tab（不重复建 PTY）", async () => {

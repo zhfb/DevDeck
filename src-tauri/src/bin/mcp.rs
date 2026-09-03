@@ -5,10 +5,10 @@
 //!
 //! 用法（开发）：
 //!   cargo run --bin devdeck-mcp
-//!   或设置 DEVDeck_DOCKER_SOCKET 指向其它引擎 socket。
+//!   或设置 DEVDDECK_DOCKER_SOCKET 指向其它引擎 socket（兼容回退 DEVDeck_DOCKER_SOCKET）。
 //!
 //! 在 Claude Code 中接入：
-//!   claude mcp add devdeck -- bash -lc 'DEVDeck_DOCKER_SOCKET=$HOME/.lima/devdeck/sock/docker.sock <devdeck-mcp 可执行路径>'
+//!   claude mcp add devdeck -- bash -lc 'DEVDDECK_DOCKER_SOCKET=$HOME/.lima/devdeck/sock/docker.sock <devdeck-mcp 可执行路径>'
 //! 在 Cursor 中接入：
 //!   Settings → MCP → Add：Command = devdeck-mcp 可执行路径
 use std::io::{BufRead, Write};
@@ -29,42 +29,6 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// 单次命令输出上限，防止高日志量容器导致内存耗尽
 const MAX_OUTPUT: usize = 4 * 1024 * 1024;
-
-/// 引号感知的命令行拆分：支持 `sh -c "echo a && b"`、`echo "hello world"` 等写法
-fn shell_words_split(command: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut cur = String::new();
-    let chars = command.chars().peekable();
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut has_word = false;
-    for c in chars {
-        match c {
-            '\'' if !in_double => {
-                in_single = !in_single;
-                has_word = true;
-            }
-            '"' if !in_single => {
-                in_double = !in_double;
-                has_word = true;
-            }
-            ' ' | '\t' | '\n' if !in_single && !in_double => {
-                if has_word {
-                    words.push(std::mem::take(&mut cur));
-                    has_word = false;
-                }
-            }
-            _ => {
-                cur.push(c);
-                has_word = true;
-            }
-        }
-    }
-    if has_word {
-        words.push(cur);
-    }
-    words
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -299,7 +263,8 @@ async fn handle_tool(
         "docker_exec" => {
             let container = arg_str("container");
             let command = arg_str("command");
-            let cmd = shell_words_split(&command);
+            // 与 docker.rs::split_command 统一使用 shell-words crate（review Important）
+            let cmd = shell_words::split(&command).unwrap_or_default();
             if cmd.is_empty() {
                 return Err("command 不能为空".into());
             }
