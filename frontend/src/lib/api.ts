@@ -431,9 +431,9 @@ export const mockHandlers: Record<string, (a: any) => unknown> = {
   "ssh_broadcast": async ({ sessionIds }: { sessionIds: string[] }) => sessionIds.length,
   "auto_forward_set": async () => ({ ok: true }),
   "auto_forward_get": async () => null,
-  "compose_run": async ({ args }: { args: string[] }) =>
+  "compose_run": async ({ args }: { target: unknown; args: string[] }) =>
     `mock: docker compose ${args.join(" ")}\n[+] Running 0/0\n ✔ Container demo  Started\n`,
-  "compose_ps": async () => [
+  "compose_ps": async (_p: { target: unknown }) => [
     { name: "web", state: "running", status: "Up 3 minutes" },
     { name: "db", state: "running", status: "Up 3 minutes" },
     { name: "redis", state: "exited", status: "Exited (0) 2 minutes ago" },

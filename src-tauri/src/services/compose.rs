@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 use thiserror::Error;
+use tokio::io::AsyncReadExt;
 use crate::services::docker::DockerManager;
 use crate::services::ssh::SshManager;
 
@@ -36,6 +37,11 @@ pub struct ComposeService {
     pub state: String,   // running | exited | ...
     pub status: String,  // human status
 }
+
+/// 远端引擎类型的标识（与 models.rs / docker.rs 一致）
+const SSH_REMOTE_KIND: &str = "ssh-remote";
+/// 本地 docker compose 超时（up/build 涉及网络拉取，放宽到 10 分钟）
+const LOCAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 pub struct ComposeManager {
     ssh: Arc<SshManager>,
@@ -68,12 +74,13 @@ impl ComposeManager {
         let engines = self.docker.list_engines().await;
         engines
             .iter()
-            .find(|e| e.id == engine_id && e.kind != "ssh-remote" && e.reachable)
+            .find(|e| e.id == engine_id && e.kind != SSH_REMOTE_KIND && e.reachable)
             .map(|e| e.endpoint.clone())
             .ok_or_else(|| ComposeError::Run(format!("本地引擎 {engine_id} 不可达或未启动")))
     }
 
     /// 本地通道：spawn `docker compose <args>`，DOCKER_HOST 指向目标引擎。
+    /// 带超时保护：挂起（交互提示/网络卡死/引擎无响应）时终止子进程，避免 UI 永久冻结。
     async fn run_local(
         &self,
         engine_id: &str,
@@ -91,20 +98,57 @@ impl ComposeManager {
         if let Some(dir) = dir.filter(|d| !d.is_empty()) {
             cmd.current_dir(dir);
         }
-        // macOS GUI 进程的 PATH 不含 docker CLI，需显式补全（OrbStack / Homebrew 常见路径）
+        // macOS GUI 进程的 PATH 不含 docker CLI，需显式补全常见安装路径：
+        // OrbStack(~/.orbstack/bin)、Docker Desktop(~/.docker/bin)、Homebrew(/usr/local|/opt/homebrew)
+        let home = std::env::var("HOME").unwrap_or_default();
         let path = std::env::var("PATH").unwrap_or_default();
-        cmd.env("PATH", format!("/usr/local/bin:/opt/homebrew/bin:{path}"));
+        cmd.env(
+            "PATH",
+            format!("{home}/.orbstack/bin:{home}/.docker/bin:/usr/local/bin:/opt/homebrew/bin:{path}"),
+        );
         cmd.env("DOCKER_HOST", format!("unix://{endpoint}"));
-        let out = cmd
-            .output()
-            .await
+        // 用 default context 确保 DOCKER_HOST 完全生效，避免用户自定义 context 干扰
+        cmd.env("DOCKER_CONTEXT", "default");
+
+        let mut child = cmd
+            .spawn()
             .map_err(|e| ComposeError::Run(format!("本地执行失败（请确认已安装 docker CLI）：{e}")))?;
-        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        if !out.status.success() {
+        // 手动接管管道 + join 等待，child 保留在外层，超时后可 kill
+        let mut out_buf = Vec::new();
+        let mut err_buf = Vec::new();
+        let mut out_pipe = child.stdout.take();
+        let mut err_pipe = child.stderr.take();
+        let read_out = async {
+            if let Some(mut p) = out_pipe.take() {
+                let _ = p.read_to_end(&mut out_buf).await;
+            }
+        };
+        let read_err = async {
+            if let Some(mut p) = err_pipe.take() {
+                let _ = p.read_to_end(&mut err_buf).await;
+            }
+        };
+        let status = tokio::time::timeout(LOCAL_TIMEOUT, async {
+            tokio::join!(child.wait(), read_out, read_err).0
+        })
+        .await;
+        let status = match status {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                return Err(ComposeError::Run(format!("docker compose 执行失败：{e}")));
+            }
+            Err(_) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err(ComposeError::Run("docker compose 执行超时（600s），已终止".to_string()));
+            }
+        };
+        let stdout = String::from_utf8_lossy(&out_buf).trim().to_string();
+        let stderr = String::from_utf8_lossy(&err_buf).trim().to_string();
+        if !status.success() {
             return Err(ComposeError::Run(format!(
                 "docker compose 退出码 {}{}",
-                out.status.code().unwrap_or(-1),
+                status.code().unwrap_or(-1),
                 if stderr.is_empty() {
                     String::new()
                 } else {
@@ -112,13 +156,17 @@ impl ComposeManager {
                 }
             )));
         }
-        if stdout.is_empty() {
-            if stderr.is_empty() {
-                return Err(ComposeError::Run("docker compose 未返回输出".to_string()));
-            }
-            return Ok(stderr);
+        // 非零退出已单独处理；成功时若 stderr 有警告，追加到输出里避免被误判为失败
+        if stdout.is_empty() && stderr.is_empty() {
+            return Err(ComposeError::Run("docker compose 未返回输出".to_string()));
         }
-        Ok(stdout)
+        Ok(if stderr.is_empty() {
+            stdout
+        } else if stdout.is_empty() {
+            stderr
+        } else {
+            format!("{stdout}\n{stderr}")
+        })
     }
 
     /// Run an arbitrary `docker compose <args...>` on the given target.
@@ -192,4 +240,65 @@ fn service_from_value(v: &serde_json::Value) -> Option<ComposeService> {
 fn shell_quote(s: &str) -> String {
     let inner = s.replace('\'', "'\\''");
     format!("'{inner}'")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_top_level_array_format() {
+        // docker compose v2 官方默认：单行 JSON 数组
+        let out = r#"[{"Service":"web","State":"running","Status":"Up 3 minutes"},{"Service":"db","State":"exited","Status":"Exited (0) 2 minutes ago"}]"#;
+        let svcs = parse_ps_json(out);
+        assert_eq!(svcs.len(), 2);
+        assert_eq!(svcs[0].name, "web");
+        assert_eq!(svcs[0].state, "running");
+        assert_eq!(svcs[1].name, "db");
+        assert_eq!(svcs[1].state, "exited");
+    }
+
+    #[test]
+    fn parses_ndjson_line_by_line() {
+        // 部分 compose 版本输出 NDJSON：每行一个对象
+        let out = "{\"Name\":\"proj-web-1\",\"Service\":\"web\",\"State\":\"running\"}\n{\"Name\":\"proj-db-1\",\"Service\":\"db\",\"State\":\"exited\"}\n";
+        let svcs = parse_ps_json(out);
+        assert_eq!(svcs.len(), 2);
+        assert_eq!(svcs[0].name, "web");
+        assert_eq!(svcs[1].name, "db");
+    }
+
+    #[test]
+    fn empty_array_yields_empty_vec() {
+        assert!(parse_ps_json("[]").is_empty());
+    }
+
+    #[test]
+    fn falls_back_to_name_when_service_missing() {
+        let out = r#"[{"Name":"proj-web-1","State":"running","Status":"Up 3 minutes"}]"#;
+        let svcs = parse_ps_json(out);
+        assert_eq!(svcs.len(), 1);
+        assert_eq!(svcs[0].name, "proj-web-1");
+    }
+
+    #[test]
+    fn filters_non_object_and_blank_lines() {
+        // 混入非对象元素/空行不应产生垃圾条目
+        let out = "[\n  {\"Service\":\"web\",\"State\":\"running\"},\n  42\n]\n\n";
+        let svcs = parse_ps_json(out);
+        assert_eq!(svcs.len(), 1);
+        assert_eq!(svcs[0].name, "web");
+    }
+
+    #[test]
+    fn blank_or_garbage_input_yields_empty_vec() {
+        assert!(parse_ps_json("").is_empty());
+        assert!(parse_ps_json("not json at all").is_empty());
+    }
+
+    #[test]
+    fn shell_quote_wraps_and_escapes() {
+        assert_eq!(shell_quote("plain"), "'plain'");
+        assert_eq!(shell_quote("a'b"), "'a'\\''b'");
+    }
 }
