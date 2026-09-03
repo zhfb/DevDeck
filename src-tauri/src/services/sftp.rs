@@ -49,6 +49,12 @@ impl SftpManager {
     }
 
     pub async fn expand_transfer(&self, session_id: &str, spec: TransferSpec) -> Result<Vec<TransferSpec>, SshError> {
+        // 用户直接输入的远端路径不允许 `..`（跨目录跳转），严格拒绝而非静默改写（review Minor）
+        if sanitize_rel_strict(&spec.remote_path.replace('\\', "/")).is_none() {
+            return Err(SshError::Channel(
+                "远端路径包含 `..` 或反斜杠，已拒绝（不允许跨目录跳转）".to_string(),
+            ));
+        }
         match spec.direction {
             TransferDirection::Upload => {
                 let root = tokio::fs::metadata(&spec.local_path).await
@@ -408,6 +414,25 @@ fn sanitize_rel(path: &str) -> Option<String> {
     Some(out.join("/"))
 }
 
+/// 用户直接输入的远端路径校验：与 [`sanitize_rel`] 不同，遇到 `..` 段直接拒绝
+/// （返回 None），防止用户输入 `/data/../etc` 之类路径被静默改写后跨目录写入/读取。
+fn sanitize_rel_strict(path: &str) -> Option<String> {
+    let mut out = Vec::new();
+    for seg in path.split('/') {
+        if seg == ".." {
+            return None;
+        }
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg.contains('\\') {
+            return None;
+        }
+        out.push(seg);
+    }
+    Some(out.join("/"))
+}
+
 trait EmptyPath {
     fn if_empty(self, fallback: impl FnOnce() -> String) -> String;
 }
@@ -420,7 +445,7 @@ impl EmptyPath for String {
 
 #[cfg(test)]
 mod tests {
-    use super::{join_remote, normalize_remote_path, sanitize_rel};
+    use super::{join_remote, normalize_remote_path, sanitize_rel, sanitize_rel_strict};
 
     #[test]
     fn normalizes_remote_paths_for_the_sftp_browser() {
@@ -450,5 +475,18 @@ mod tests {
         assert_eq!(sanitize_rel("/etc/passwd").as_deref(), Some("etc/passwd"));
         // 反斜杠（Windows 风格逃逸）整段拒绝
         assert_eq!(sanitize_rel(r"a\b"), None);
+    }
+
+    #[test]
+    fn sanitize_rel_strict_rejects_parent_traversal() {
+        // 用户输入路径：`..` 直接拒绝，而不是静默改写
+        assert_eq!(sanitize_rel_strict("a/../b"), None);
+        assert_eq!(sanitize_rel_strict("/data/../etc"), None);
+        assert_eq!(sanitize_rel_strict("../etc/passwd"), None);
+        assert_eq!(sanitize_rel_strict(r"..\..\win"), None);
+        // 正常路径与 `.` 段仍被接受/规范化
+        assert_eq!(sanitize_rel_strict("a/b/c").as_deref(), Some("a/b/c"));
+        assert_eq!(sanitize_rel_strict("a/./b").as_deref(), Some("a/b"));
+        assert_eq!(sanitize_rel_strict("/data/app").as_deref(), Some("data/app"));
     }
 }

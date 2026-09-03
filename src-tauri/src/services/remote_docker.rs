@@ -66,13 +66,22 @@ impl RemoteDockerManager {
         let host_id_owned = host_id.to_string();
         let socket = REMOTE_DOCKER_SOCKET.to_string();
         let task = tokio::spawn(async move {
-            while let Ok((local, _)) = listener.accept().await {
-                let ssh = ssh.clone();
-                let host_id = host_id_owned.clone();
-                let socket = socket.clone();
-                tokio::spawn(async move {
-                    let _ = bridge_connection(&ssh, &host_id, &socket, local).await;
-                });
+            loop {
+                match listener.accept().await {
+                    Ok((local, _)) => {
+                        let ssh = ssh.clone();
+                        let host_id = host_id_owned.clone();
+                        let socket = socket.clone();
+                        tokio::spawn(async move {
+                            let _ = bridge_connection(&ssh, &host_id, &socket, local).await;
+                        });
+                    }
+                    Err(e) => {
+                        // accept 失败（通常是 socket 被删除/关闭）时记录日志再退出，避免任务静默消失难以排查（review Minor）
+                        tracing::error!("remote docker bridge accept failed: {e}");
+                        break;
+                    }
+                }
             }
         });
 

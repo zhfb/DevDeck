@@ -53,8 +53,12 @@ const SOCKET_CANDIDATES: &[(&str, &str)] = &[
     ("podman", "$XDG_RUNTIME_DIR/podman/podman.sock"),
 ];
 
-/// 单个 exec 会话通道：(client, exec_id, 输入写入端)
-type ExecChannel = (Docker, String, std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send>>);
+/// 单个 exec 会话通道：Docker 客户端 + exec id + 终端输入写入端
+pub struct ExecChannel {
+    pub client: Docker,
+    pub exec_id: String,
+    pub input: std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send>>,
+}
 
 pub struct DockerManager {
     /// engine_id → Docker client (local engines only for now)
@@ -634,7 +638,10 @@ impl DockerManager {
         let StartExecResults::Attached { mut output, input } = attached else {
             return Err(DockerError::NoEngine);
         };
-        self.execs.lock().await.insert(session_id.to_string(), (client, created.id, input));
+        self.execs.lock().await.insert(
+            session_id.to_string(),
+            ExecChannel { client, exec_id: created.id, input },
+        );
         let app = app.clone();
         let session_id = session_id.to_string();
         tokio::spawn(async move {
@@ -652,10 +659,10 @@ impl DockerManager {
 
     pub async fn exec_input(&self, session_id: &str, data: &[u8]) -> Result<(), DockerError> {
         let mut execs = self.execs.lock().await;
-        let (_, _, input) = execs
+        let exec = execs
             .get_mut(session_id)
             .ok_or_else(|| DockerError::EngineNotFound(format!("exec session not found: {session_id}")))?;
-        input.write_all(data).await.map_err(|e| DockerError::EngineNotFound(e.to_string()))?;
+        exec.input.write_all(data).await.map_err(|e| DockerError::EngineNotFound(e.to_string()))?;
         Ok(())
     }
 
@@ -664,10 +671,10 @@ impl DockerManager {
             return Err(DockerError::EngineNotFound("exec terminal size must be positive".to_string()));
         }
         let execs = self.execs.lock().await;
-        let (client, exec_id, _) = execs
+        let exec = execs
             .get(session_id)
             .ok_or_else(|| DockerError::EngineNotFound(format!("exec session not found: {session_id}")))?;
-        client.resize_exec(exec_id, ResizeExecOptions { height: rows, width: cols }).await?;
+        exec.client.resize_exec(&exec.exec_id, ResizeExecOptions { height: rows, width: cols }).await?;
         Ok(())
     }
 
