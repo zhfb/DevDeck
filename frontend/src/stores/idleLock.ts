@@ -40,7 +40,7 @@ export const useIdleLock = create<IdleLockState>((set, get) => ({
     window.setInterval(() => get().check(), CHECK_MS);
     // 初次加载配置
     try {
-      const cfg = await invoke<IdleLockConfig>("idle_lock_config.get");
+      const cfg = await invoke<IdleLockConfig>("idle_lock_config_get");
       set({ config: cfg, lastActivity: Date.now() });
     } catch {
       /* 浏览器 mock 或后端暂不可用 */
@@ -60,7 +60,7 @@ export const useIdleLock = create<IdleLockState>((set, get) => ({
 
   unlock: async (pin) => {
     try {
-      const ok = await invoke<boolean>("idle_lock.unlock", { pin });
+      const ok = await invoke<boolean>("idle_lock_unlock", { pin });
       if (ok) {
         set({ locked: false, lastActivity: Date.now() });
       }

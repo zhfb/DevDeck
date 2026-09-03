@@ -12,6 +12,7 @@ import {
   Terminal,
   Trash2,
   Waypoints,
+  X,
 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
 import { useContainerAction, useContainerCreate, useContainers, useEngines, useHosts } from "@/lib/queries";
@@ -156,6 +157,28 @@ export default function ContainersPanel(_props: PanelProps) {
   const [runName, setRunName] = useState("");
   const [runImage, setRunImage] = useState("");
   const [runPorts, setRunPorts] = useState("");
+  const [runCmd, setRunCmd] = useState("");
+  const [runEntrypoint, setRunEntrypoint] = useState("");
+  const [runEnv, setRunEnv] = useState<{ key: string; value: string }[]>([]);
+  const [runVolumes, setRunVolumes] = useState<string[]>([]);
+  const [runNetwork, setRunNetwork] = useState("");
+  const [runRestart, setRunRestart] = useState("no");
+  const [runMemoryMb, setRunMemoryMb] = useState("");
+  const [runCpus, setRunCpus] = useState("");
+
+  const resetRunForm = () => {
+    setRunName("");
+    setRunImage("");
+    setRunPorts("");
+    setRunCmd("");
+    setRunEntrypoint("");
+    setRunEnv([]);
+    setRunVolumes([]);
+    setRunNetwork("");
+    setRunRestart("no");
+    setRunMemoryMb("");
+    setRunCpus("");
+  };
 
   // 事件驱动端口转发（P2）：容器 start/restart 时自动建隧道，停止时拆除
   const { data: hosts } = useHosts();
@@ -303,17 +326,25 @@ export default function ContainersPanel(_props: PanelProps) {
     containerCreate.mutate(
       {
         engineId,
-        name: runName.trim() || `devdeck-${Date.now().toString(36)}`,
+        name: runName.trim() || `devdeck-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         image: runImage.trim(),
+        cmd: runCmd.trim() || undefined,
+        entrypoint: runEntrypoint.trim() || undefined,
+        env: runEnv
+          .map((e) => (e.key.trim() ? `${e.key.trim()}=${e.value}` : null))
+          .filter((e): e is string => e !== null),
         ports: runPorts.trim() || undefined,
+        volumes: runVolumes.map((v) => v.trim()).filter((v) => v.length > 0),
+        network: runNetwork.trim() || undefined,
+        restart: runRestart,
+        memoryMb: runMemoryMb.trim() ? Number(runMemoryMb) : undefined,
+        cpus: runCpus.trim() ? Number(runCpus) : undefined,
       },
       {
         onSuccess: (id) => {
           toast.success(`已启动容器 ${runName.trim() || id}`);
           setRunOpen(false);
-          setRunName("");
-          setRunImage("");
-          setRunPorts("");
+          resetRunForm();
         },
         onError: (e) => toast.error("运行容器失败", { description: String(e) }),
       }
@@ -615,29 +646,123 @@ export default function ContainersPanel(_props: PanelProps) {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Run container placeholder dialog */}
-      <Dialog open={runOpen} onOpenChange={setRunOpen}>
+      {/* Run container dialog */}
+      <Dialog open={runOpen} onOpenChange={(open) => { setRunOpen(open); if (!open) resetRunForm(); }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>运行容器</DialogTitle>
-            <DialogDescription>输入镜像与端口映射，创建新容器。</DialogDescription>
+            <DialogDescription>配置镜像、端口、环境变量与资源限制，创建新容器。</DialogDescription>
           </DialogHeader>
-          <div className="grid gap-3">
-            <div className="grid gap-1.5">
-              <Label>容器名称</Label>
-              <Input placeholder="例如 my-app" value={runName} onChange={(e) => setRunName(e.target.value)} />
+          <div className="grid max-h-[68vh] gap-3 overflow-y-auto pr-1">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <Label>容器名称</Label>
+                <Input placeholder="例如 my-app" value={runName} onChange={(e) => setRunName(e.target.value)} />
+              </div>
+              <div className="grid gap-1.5">
+                <Label>镜像</Label>
+                <Input placeholder="例如 nginx:latest" value={runImage} onChange={(e) => setRunImage(e.target.value)} />
+              </div>
             </div>
-            <div className="grid gap-1.5">
-              <Label>镜像</Label>
-              <Input placeholder="例如 nginx:latest" value={runImage} onChange={(e) => setRunImage(e.target.value)} />
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <Label>启动命令（覆盖 CMD）</Label>
+                <Input placeholder="例如 nginx -g 'daemon off;'" value={runCmd} onChange={(e) => setRunCmd(e.target.value)} />
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Entrypoint（覆盖）</Label>
+                <Input placeholder="例如 /start.sh --prod" value={runEntrypoint} onChange={(e) => setRunEntrypoint(e.target.value)} />
+              </div>
             </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <Label>网络</Label>
+                <Input placeholder="默认 bridge" value={runNetwork} onChange={(e) => setRunNetwork(e.target.value)} />
+              </div>
+              <div className="grid gap-1.5">
+                <Label>重启策略</Label>
+                <Select value={runRestart} onValueChange={setRunRestart}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="重启策略" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="no">不自动重启</SelectItem>
+                    <SelectItem value="always">总是重启</SelectItem>
+                    <SelectItem value="on-failure">失败时重启</SelectItem>
+                    <SelectItem value="unless-stopped">除非手动停止</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
             <div className="grid gap-1.5">
               <Label>端口映射</Label>
               <Input
-                placeholder="例如 8080:80（宿主机:容器）"
+                placeholder="例如 8080:80, 5432:5432（宿主机:容器，逗号分隔）"
                 value={runPorts}
                 onChange={(e) => setRunPorts(e.target.value)}
               />
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label>环境变量</Label>
+              <div className="grid gap-1.5">
+                {runEnv.map((row, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <Input
+                      placeholder="KEY"
+                      className="w-40"
+                      value={row.key}
+                      onChange={(e) => setRunEnv(runEnv.map((r, j) => (j === i ? { ...r, key: e.target.value } : r)))}
+                    />
+                    <Input
+                      placeholder="VALUE"
+                      value={row.value}
+                      onChange={(e) => setRunEnv(runEnv.map((r, j) => (j === i ? { ...r, value: e.target.value } : r)))}
+                    />
+                    <Button variant="ghost" size="icon-sm" onClick={() => setRunEnv(runEnv.filter((_, j) => j !== i))}>
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+                <Button variant="outline" size="sm" className="justify-start" onClick={() => setRunEnv([...runEnv, { key: "", value: "" }])}>
+                  <Plus className="h-3.5 w-3.5" /> 添加环境变量
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label>卷挂载</Label>
+              <div className="grid gap-1.5">
+                {runVolumes.map((v, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <Input
+                      placeholder="宿主机目录:容器目录[:ro]"
+                      value={v}
+                      onChange={(e) => setRunVolumes(runVolumes.map((r, j) => (j === i ? e.target.value : r)))}
+                    />
+                    <Button variant="ghost" size="icon-sm" onClick={() => setRunVolumes(runVolumes.filter((_, j) => j !== i))}>
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+                <Button variant="outline" size="sm" className="justify-start" onClick={() => setRunVolumes([...runVolumes, ""])}>
+                  <Plus className="h-3.5 w-3.5" /> 添加卷挂载
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <Label>内存上限（MB）</Label>
+                <Input type="number" min={0} placeholder="例如 512" value={runMemoryMb} onChange={(e) => setRunMemoryMb(e.target.value)} />
+              </div>
+              <div className="grid gap-1.5">
+                <Label>CPU 限制（核数）</Label>
+                <Input type="number" min={0} step={0.5} placeholder="例如 2" value={runCpus} onChange={(e) => setRunCpus(e.target.value)} />
+              </div>
             </div>
           </div>
           <DialogFooter>

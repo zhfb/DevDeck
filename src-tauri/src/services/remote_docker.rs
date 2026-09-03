@@ -66,18 +66,13 @@ impl RemoteDockerManager {
         let host_id_owned = host_id.to_string();
         let socket = REMOTE_DOCKER_SOCKET.to_string();
         let task = tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((local, _)) => {
-                        let ssh = ssh.clone();
-                        let host_id = host_id_owned.clone();
-                        let socket = socket.clone();
-                        tokio::spawn(async move {
-                            let _ = bridge_connection(&ssh, &host_id, &socket, local).await;
-                        });
-                    }
-                    Err(_) => break,
-                }
+            while let Ok((local, _)) = listener.accept().await {
+                let ssh = ssh.clone();
+                let host_id = host_id_owned.clone();
+                let socket = socket.clone();
+                tokio::spawn(async move {
+                    let _ = bridge_connection(&ssh, &host_id, &socket, local).await;
+                });
             }
         });
 

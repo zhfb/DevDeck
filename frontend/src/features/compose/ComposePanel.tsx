@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Layers, Play, Square, RotateCw, Download, Hammer, RefreshCw, Trash2 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
 import { useHosts } from "@/lib/queries";
@@ -79,8 +79,8 @@ export default function ComposePanel(_props: PanelProps) {
     [effectiveHostId, dir, file]
   );
 
-  // 命令面板入口
-  useMemo(() => {
+  // 命令面板入口（副作用注册，不能用 useMemo）
+  useEffect(() => {
     return registerAction({
       id: "compose.up",
       title: "Compose：up -d",

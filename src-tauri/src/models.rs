@@ -374,3 +374,87 @@ pub struct AppInfo {
 pub fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_lock_config_defaults_when_fields_missing() {
+        let cfg: IdleLockConfig = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.timeout_minutes, 10, "缺省超时应回退默认 10 分钟");
+        assert!(!cfg.use_touch_id);
+        assert!(!cfg.has_pin);
+    }
+
+    #[test]
+    fn idle_lock_config_round_trip_keeps_camel_case() {
+        let cfg = IdleLockConfig {
+            enabled: true,
+            timeout_minutes: 15,
+            use_touch_id: false,
+            has_pin: true,
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("timeoutMinutes"));
+        assert!(json.contains("hasPin"));
+        let back: IdleLockConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.enabled, cfg.enabled);
+        assert_eq!(back.timeout_minutes, 15);
+        assert!(back.has_pin);
+    }
+
+    #[test]
+    fn registry_config_round_trip_omits_optional_credential_ref() {
+        let cfg = RegistryConfig {
+            id: "r1".into(),
+            name: "UCloud".into(),
+            url: "https://registry.ucloud.cn".into(),
+            username: "zhfb".into(),
+            credential_ref: None,
+            insecure: true,
+            is_docker_hub: false,
+            created_at: "2026-09-03T00:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(!json.contains("credentialRef"), "None 字段应被跳过");
+        let back: RegistryConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.url, cfg.url);
+        assert!(back.insecure);
+    }
+
+    #[test]
+    fn config_bundle_round_trip_preserves_app_and_version() {
+        let bundle = ConfigBundle {
+            app: "devdeck".into(),
+            schema_version: 1,
+            exported_at: "2026-09-03T00:00:00Z".into(),
+            host_groups: vec![],
+            hosts: vec![],
+            tunnels: vec![],
+            snippets: vec![],
+            registries: vec![],
+        };
+        let json = serde_json::to_string(&bundle).unwrap();
+        let back: ConfigBundle = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.app, "devdeck");
+        assert_eq!(back.schema_version, 1);
+        assert!(json.contains("schemaVersion"));
+    }
+
+    #[test]
+    fn config_bundle_missing_lists_default_to_empty() {
+        let json = r#"{"app":"devdeck","schemaVersion":1,"exportedAt":"2026-09-03T00:00:00Z"}"#;
+        let back: ConfigBundle = serde_json::from_str(json).unwrap();
+        assert!(back.hosts.is_empty());
+        assert!(back.registries.is_empty());
+    }
+
+    #[test]
+    fn registry_repo_tags_default_to_empty() {
+        let repo: RegistryRepo = serde_json::from_str(r#"{"name":"library/alpine"}"#).unwrap();
+        assert_eq!(repo.name, "library/alpine");
+        assert!(repo.tags.is_empty());
+    }
+}

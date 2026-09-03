@@ -201,6 +201,8 @@ pub struct SshManager {
     hostkey: HostKeyResolver,
     /// session_id → input channel into the PTY reader task
     ptys: Mutex<HashMap<String, mpsc::UnboundedSender<PtyCmd>>>,
+    /// session_id → PTY reader task 的句柄，用于断开/重连时强制终止旧任务
+    tasks: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     /// session_id → client handle (for exec / disconnect)。
     /// 复用同一条 SSH 传输时，多个 session 共享同一个 slot。
     handles: Mutex<HashMap<String, SharedHandle>>,
@@ -222,6 +224,7 @@ impl SshManager {
             app,
             hostkey,
             ptys: Mutex::new(HashMap::new()),
+            tasks: Mutex::new(HashMap::new()),
             handles: Mutex::new(HashMap::new()),
             host_by_session: Mutex::new(HashMap::new()),
             pool: Mutex::new(HashMap::new()),
@@ -477,13 +480,14 @@ impl SshManager {
             remote_forwards: self.remote_forwards.clone(),
         };
 
-        let mut config = Config::default();
         // keepalive every 15s → network drop is detected within ~30-45s and
         // the session's `disconnected` event fires so the frontend can
         // auto-reconnect. keepalive_max (default 3) closes the connection
         // after that many unanswered keepalives.
-        config.keepalive_interval = Some(std::time::Duration::from_secs(15));
-        let config = Arc::new(config);
+        let config = Arc::new(Config {
+            keepalive_interval: Some(std::time::Duration::from_secs(15)),
+            ..Config::default()
+        });
 
         tracing::info!(
             host = %host.address,
@@ -641,7 +645,13 @@ impl SshManager {
     ) -> Result<SshSession, SshError> {
         // drop any stale reader-task mappings for this session id
         self.ptys.lock().await.remove(session_id);
+        // 强制终止旧的 PTY reader 任务，避免新旧连接同时向同一 session 发射数据
+        if let Some(h) = self.tasks.lock().await.remove(session_id) {
+            h.abort();
+        }
         self.handles.lock().await.remove(session_id);
+        // 旧会话的 sudo 密码可能已失效，重连后不沿用
+        self.sudo_passwords.lock().await.remove(session_id);
         // 若原传输已失效，重置连接池，让重连建立一条全新传输
         self.pool.lock().await.remove(&host.id);
 
@@ -668,24 +678,40 @@ impl SshManager {
         let title = format!("{}@{}", host.user, host.address);
 
         // 会话复用：同一主机已有共享连接则复用，否则新建一条传输并加入连接池。
+        // 注意：connect_inner 可能阻塞数十秒（认证/超时），绝不能持锁 await。
         let slot = {
-            let mut pool = self.pool.lock().await;
-            if let Some(entry) = pool.get_mut(&host.id) {
-                entry.sessions.insert(session_id.clone());
-                entry.slot.clone()
-            } else {
-                let (client, _) = self
-                    .connect_inner(host, password, Some(session_id.clone()))
-                    .await?;
-                let slot: SharedHandle = Arc::new(Mutex::new(client));
-                pool.insert(
-                    host.id.clone(),
-                    PoolEntry {
-                        slot: slot.clone(),
-                        sessions: std::collections::HashSet::from([session_id.clone()]),
-                    },
-                );
-                slot
+            let existing = {
+                let mut pool = self.pool.lock().await;
+                if let Some(entry) = pool.get_mut(&host.id) {
+                    entry.sessions.insert(session_id.clone());
+                    Some(entry.slot.clone())
+                } else {
+                    None
+                }
+            };
+            match existing {
+                Some(slot) => slot,
+                None => {
+                    let (client, _) = self
+                        .connect_inner(host, password, Some(session_id.clone()))
+                        .await?;
+                    let slot: SharedHandle = Arc::new(Mutex::new(client));
+                    let mut pool = self.pool.lock().await;
+                    if let Some(entry) = pool.get_mut(&host.id) {
+                        // 等待期间另一任务已插入该主机连接：复用已有 slot，丢弃本次新建
+                        entry.sessions.insert(session_id.clone());
+                        entry.slot.clone()
+                    } else {
+                        pool.insert(
+                            host.id.clone(),
+                            PoolEntry {
+                                slot: slot.clone(),
+                                sessions: std::collections::HashSet::from([session_id.clone()]),
+                            },
+                        );
+                        slot
+                    }
+                }
             }
         };
         {
@@ -711,7 +737,9 @@ impl SshManager {
             .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
             .await
             .map_err(|e| SshError::Channel(e.to_string()))?;
-        let _ = channel.agent_forward(true).await;
+        // Agent 转发默认关闭：避免将本机 SSH Agent socket 暴露给远端
+        // （CVE-2016-10009 类风险）。DevDeck 使用密码/私钥文件认证，无需转发。
+        let _ = channel.agent_forward(false).await;
         channel
             .exec(true, "$SHELL")
             .await
@@ -720,12 +748,14 @@ impl SshManager {
         let (mut read_half, write_half) = channel.split();
         let (tx, mut rx) = mpsc::unbounded_channel::<PtyCmd>();
 
-        // 缓存密码（仅内存）用于 sudo 自动填充
+        // 仅当 sudo 自动填充开启时才缓存密码（仅内存），关闭时不为暴露面留明文
         if let Some(pw) = password {
-            self.sudo_passwords
-                .lock()
-                .await
-                .insert(session_id.clone(), pw.to_string());
+            if self.sudo_autofill.load(std::sync::atomic::Ordering::Relaxed) {
+                self.sudo_passwords
+                    .lock()
+                    .await
+                    .insert(session_id.clone(), pw.to_string());
+            }
         }
 
         let app = self.app.clone();
@@ -734,7 +764,7 @@ impl SshManager {
         let sudo_passwords = self.sudo_passwords.clone();
         let sudo_autofill = self.sudo_autofill.clone();
         let tx_task = tx.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     msg = read_half.wait() => {
@@ -798,6 +828,7 @@ impl SshManager {
         drop(client);
 
         self.ptys.lock().await.insert(session_id.clone(), tx);
+        self.tasks.lock().await.insert(session_id.clone(), handle);
         self.host_by_session.lock().await.insert(session_id.clone(), host.id.clone());
         let _ = self.app.emit("ssh:status", session.clone());
         Ok(session)
@@ -862,11 +893,15 @@ impl SshManager {
             .get(session_id)
             .cloned()
             .ok_or_else(|| SshError::SessionNotFound(session_id.to_string()))?;
-        let handle = slot.lock().await;
-        let mut channel = handle
-            .channel_open_session()
-            .await
-            .map_err(|e| SshError::Channel(format!("open exec channel: {e}")))?;
+        let mut channel = {
+            let handle = slot.lock().await;
+            let ch = handle
+                .channel_open_session()
+                .await
+                .map_err(|e| SshError::Channel(format!("open exec channel: {e}")))?;
+            // 立即释放共享连接锁：命令执行期间不阻塞其他标签页/SFTP/转发
+            ch
+        };
         channel
             .exec(true, command)
             .await
@@ -877,7 +912,6 @@ impl SshManager {
                 output.extend_from_slice(&data);
             }
         }
-        drop(handle);
         String::from_utf8(output).map_err(|e| SshError::Channel(format!("exec output is not utf8: {e}")))
     }
 
@@ -1080,6 +1114,12 @@ impl SshManager {
 
     pub async fn disconnect(&self, session_id: &str) -> Result<(), SshError> {
         self.ptys.lock().await.remove(session_id);
+        // 强制终止 PTY reader 任务，避免残留后台任务继续发射事件
+        if let Some(h) = self.tasks.lock().await.remove(session_id) {
+            h.abort();
+        }
+        // 断开后立即清除内存中的 sudo 密码，避免明文残留
+        self.sudo_passwords.lock().await.remove(session_id);
         let host_id = self.host_by_session.lock().await.remove(session_id);
         let slot = self.handles.lock().await.remove(session_id);
         let mut released = false;
@@ -1189,5 +1229,36 @@ async fn maybe_autofill_sudo(
     if let Some(pw) = pw {
         let _ = tx.send(PtyCmd::Data(format!("{pw}\r").into_bytes()));
         let _ = app.emit(&format!("term:notice:{session_id}"), "已自动填充 sudo 密码");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sudo_prompt_detection_matches_sudo_hint() {
+        assert!(looks_like_sudo_prompt("[sudo] password for zhfb: "));
+        assert!(looks_like_sudo_prompt("We trust you have received the usual lecture...\r\n[sudo] password for root:"));
+    }
+
+    #[test]
+    fn sudo_prompt_detection_is_case_insensitive() {
+        assert!(looks_like_sudo_prompt("[SUDO] Password For admin: "));
+    }
+
+    #[test]
+    fn sudo_prompt_detection_does_not_match_other_password_prompts() {
+        // 其他程序自身的密码提示不应被误判为 sudo
+        assert!(!looks_like_sudo_prompt("Password: "));
+        assert!(!looks_like_sudo_prompt("password for root: "));
+        assert!(!looks_like_sudo_prompt("Enter passphrase for key '/Users/zhfb99/.ssh/id_ed25519':"));
+    }
+
+    #[test]
+    fn sudo_prompt_detection_ignores_normal_shell_output() {
+        assert!(!looks_like_sudo_prompt("zhfb@macbook ~ % ls -la"));
+        assert!(!looks_like_sudo_prompt("total 16\ndrwxr-xr-x  zhfb99  staff"));
+        assert!(!looks_like_sudo_prompt(""));
     }
 }

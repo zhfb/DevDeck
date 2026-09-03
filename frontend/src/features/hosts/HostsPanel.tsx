@@ -152,9 +152,9 @@ export default function HostsPanel(_props: PanelProps) {
     e.preventDefault();
     try {
       const group = groups?.find((g) => g.id === form.groupId);
-      await invoke("hosts.save", {
+      await invoke("hosts_save", {
         host: {
-          id: `h-${Date.now().toString(36)}`,
+          id: `h-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
           name: form.name.trim(),
           address: form.address.trim(),
           port: Number(form.port) || 22,
@@ -187,9 +187,15 @@ export default function HostsPanel(_props: PanelProps) {
     setAddOpen(true);
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!deleteHost) return;
-    toast.success(`已删除主机「${deleteHost.name}」（演示模式）`);
+    try {
+      await invoke("hosts_delete", { id: deleteHost.id });
+      await queryClient.invalidateQueries({ queryKey: ["hosts"] });
+      toast.success(`已删除主机「${deleteHost.name}」`);
+    } catch (err) {
+      toast.error("删除主机失败", { description: String(err) });
+    }
     setDeleteHost(null);
   };
 

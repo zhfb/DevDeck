@@ -3,6 +3,7 @@ import { Braces, ClipboardCopy, Plus, Send, TerminalSquare, Trash2 } from "lucid
 import type { PanelProps } from "@/features/registry";
 import { useSnippets, useSnippetSave, useSnippetDelete } from "@/lib/queries";
 import { emitTerminalInsert } from "@/lib/terminalBus";
+import { extractVars as libExtractVars, applyVars as libApplyVars } from "@/lib/snippets";
 import { useWorkspace } from "@/stores/workspace";
 import type { Snippet } from "@/lib/types";
 import { EmptyState } from "@/components/shared";
@@ -32,22 +33,12 @@ import {
 
 /** 提取命令中的 {{变量名}} 占位 */
 function extractVars(cmd: string): string[] {
-  const re = /\{\{\s*([^}]+?)\s*\}\}/g;
-  const out: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(cmd)) !== null) {
-    const name = m[1].trim();
-    if (name && !out.includes(name)) out.push(name);
-  }
-  return out;
+  return libExtractVars(cmd);
 }
 
 /** 用变量表替换命令中的 {{变量名}} */
 function applyVars(cmd: string, values: Record<string, string>): string {
-  return cmd.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, raw: string) => {
-    const name = raw.trim();
-    return values[name] ?? `{{${name}}}`;
-  });
+  return libApplyVars(cmd, values);
 }
 
 /** 常用命令库（P1: Snippets 快捷命令）— 功能清单 P1「Snippets」 */
@@ -81,7 +72,7 @@ export default function SnippetsPanel(_props: PanelProps) {
     if (!title.trim() || !command.trim()) return;
     saveSnippet.mutate(
       {
-        id: `sn-${Date.now().toString(36)}`,
+        id: `sn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         title: title.trim(),
         command: command.trim(),
         tags: tags.trim(),
@@ -308,11 +299,11 @@ export default function SnippetsPanel(_props: PanelProps) {
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 py-1">
-            {pendingVars.map((v) => (
+            {pendingVars.map((v, vi) => (
               <div key={v} className="grid gap-1.5">
                 <Label className="mono-caption text-secondary">{v}</Label>
                 <Input
-                  autoFocus
+                  autoFocus={vi === 0}
                   value={varValues[v] ?? ""}
                   placeholder={`请输入 ${v}`}
                   onChange={(e) => setVarValues((prev) => ({ ...prev, [v]: e.target.value }))}

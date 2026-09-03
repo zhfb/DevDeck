@@ -42,7 +42,7 @@ jobs:
           path: baseline/metrics.txt
 
   frontend:
-    name: frontend · typecheck + build
+    name: frontend · typecheck + unit tests + build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +54,9 @@ jobs:
         working-directory: frontend
       - name: Typecheck
         run: pnpm exec tsc --noEmit
+        working-directory: frontend
+      - name: Unit tests (vitest)
+        run: pnpm test
         working-directory: frontend
       - name: Build
         run: pnpm build

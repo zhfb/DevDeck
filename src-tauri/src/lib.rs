@@ -214,7 +214,7 @@ pub fn run() {
             }
 
             // macOS 系统托盘（menu bar）—— P0
-            if let Err(e) = tray::init_tray(&app_handle) {
+            if let Err(e) = tray::init_tray(app_handle) {
                 tracing::warn!("tray init failed: {e}");
             }
 

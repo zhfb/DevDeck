@@ -82,7 +82,7 @@ export default function VolumesPanel(_props: PanelProps) {
   const submitCreate = () => {
     if (!newName.trim()) return;
     volumeAction.mutate(
-      { action: "create", name: newName.trim() },
+      { action: "create", name: newName.trim(), driver: newDriver.trim() || undefined },
       {
         onSuccess: () => {
           toast.success(`已创建卷 ${newName.trim()}`);

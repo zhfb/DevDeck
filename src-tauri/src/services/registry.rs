@@ -2,13 +2,13 @@
 //!
 //! 用于浏览镜像仓库（如 UCloud 私有仓库 / Docker Hub）：
 //! - `GET /v2/_catalog`           → 仓库（repositories）列表
-//! - `GET /v2/{repo}/tags/list`   → 某个镜像的全部 tag
+//!   - `GET /v2/{repo}/tags/list`   → 某个镜像的全部 tag
 //!
 //! 认证：
-//! - 私有仓库通常用 Basic Auth（用户名:密码）。
-//! - Docker Hub / 部分云厂商会返回 `401` + `WWW-Authenticate: Bearer realm=...`，
-//!   此时走 token 流程（先取 token，再带 Bearer 重试）。
-//! 密码由命令层从 Keychain 读取后传入，本模块不直接触碰密钥存储。
+//!   - 私有仓库通常用 Basic Auth（用户名:密码）。
+//!   - Docker Hub / 部分云厂商会返回 `401` + `WWW-Authenticate: Bearer realm=...`，
+//!     此时走 token 流程（先取 token，再带 Bearer 重试）。
+//!   - 密码由命令层从 Keychain 读取后传入，本模块不直接触碰密钥存储。
 
 use crate::models::RegistryConfig;
 use base64::Engine as _;

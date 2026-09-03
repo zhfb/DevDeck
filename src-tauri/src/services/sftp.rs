@@ -67,7 +67,8 @@ impl SftpManager {
                             stack.push(child);
                         } else if file_type.is_file() {
                             let rel = child.strip_prefix(&root_path).map_err(|e| SshError::Channel(e.to_string()))?;
-                            result.push(TransferSpec { local_path: child.to_string_lossy().to_string(), remote_path: join_remote(&spec.remote_path, &rel.to_string_lossy()), direction: spec.direction });
+                            let Some(rel_safe) = sanitize_rel(&rel.to_string_lossy()) else { continue; };
+                            result.push(TransferSpec { local_path: child.to_string_lossy().to_string(), remote_path: join_remote(&spec.remote_path, &rel_safe), direction: spec.direction });
                         }
                     }
                 }
@@ -81,15 +82,16 @@ impl SftpManager {
                 let mut stack = vec![root.clone()];
                 let mut result = Vec::new();
                 while let Some(path) = stack.pop() {
-                    let mut dir = sftp.read_dir(&path).await.map_err(|e| SshError::Channel(format!("read download directory: {e}")))?;
-                    while let Some(entry) = dir.next() {
+                    let dir = sftp.read_dir(&path).await.map_err(|e| SshError::Channel(format!("read download directory: {e}")))?;
+                    for entry in dir {
                         let child = entry.path();
                         let metadata = entry.metadata();
                         if metadata.is_dir() {
                             stack.push(child);
                         } else if metadata.is_regular() {
-                            let rel = child.strip_prefix(&root).unwrap_or(&child).trim_start_matches('/');
-                            result.push(TransferSpec { local_path: std::path::Path::new(&spec.local_path).join(rel).to_string_lossy().to_string(), remote_path: child, direction: spec.direction });
+                            let raw = child.strip_prefix(&root).unwrap_or(&child).trim_start_matches('/');
+                            let Some(rel) = sanitize_rel(raw) else { continue; };
+                            result.push(TransferSpec { local_path: std::path::Path::new(&spec.local_path).join(&rel).to_string_lossy().to_string(), remote_path: child, direction: spec.direction });
                         }
                     }
                 }
@@ -119,46 +121,52 @@ impl SftpManager {
 
     pub async fn list(&self, session_id: &str, path: &str) -> Result<Vec<SftpEntry>, SshError> {
         let sftp = self.ssh.open_sftp(session_id).await?;
-        let mut dir = sftp
-            .read_dir(path)
-            .await
-            .map_err(|e| SshError::Channel(format!("sftp read_dir: {e}")))?;
-        let mut entries = Vec::new();
-        while let Some(entry) = dir.next() {
-            let metadata = entry.metadata();
-            let kind = if metadata.is_dir() {
-                "directory"
-            } else if metadata.is_symlink() {
-                "symlink"
-            } else if metadata.is_regular() {
-                "file"
-            } else {
-                "other"
-            };
-            entries.push(SftpEntry {
-                name: entry.file_name(),
-                path: entry.path(),
-                kind: kind.to_string(),
-                size: metadata.size.unwrap_or(0),
-                modified_at: metadata.mtime.map(|mtime| {
-                    chrono::DateTime::<chrono::Utc>::from_timestamp(mtime as i64, 0)
-                        .map(|t| t.to_rfc3339())
-                        .unwrap_or_default()
-                }),
-            });
+        let result = async {
+            let dir = sftp
+                .read_dir(path)
+                .await
+                .map_err(|e| SshError::Channel(format!("sftp read_dir: {e}")))?;
+            let mut entries = Vec::new();
+            for entry in dir {
+                let metadata = entry.metadata();
+                let kind = if metadata.is_dir() {
+                    "directory"
+                } else if metadata.is_symlink() {
+                    "symlink"
+                } else if metadata.is_regular() {
+                    "file"
+                } else {
+                    "other"
+                };
+                entries.push(SftpEntry {
+                    name: entry.file_name(),
+                    path: entry.path(),
+                    kind: kind.to_string(),
+                    size: metadata.size.unwrap_or(0),
+                    modified_at: metadata.mtime.map(|mtime| {
+                        chrono::DateTime::<chrono::Utc>::from_timestamp(mtime as i64, 0)
+                            .map(|t| t.to_rfc3339())
+                            .unwrap_or_default()
+                    }),
+                });
+            }
+            entries.sort_by_key(|entry| (!matches!(entry.kind.as_str(), "directory"), entry.name.to_lowercase()));
+            Ok::<_, SshError>(entries)
         }
-        entries.sort_by_key(|entry| (!matches!(entry.kind.as_str(), "directory"), entry.name.to_lowercase()));
+        .await;
+        // 无论成败都关闭 SFTP 会话，避免子通道/会话泄漏
         let _ = sftp.close().await;
-        Ok(entries)
+        result
     }
 
     pub async fn mkdir(&self, session_id: &str, path: &str) -> Result<(), SshError> {
         let sftp = self.ssh.open_sftp(session_id).await?;
-        sftp.create_dir(path)
+        let result = sftp
+            .create_dir(path)
             .await
-            .map_err(|e| SshError::Channel(format!("sftp mkdir: {e}")))?;
+            .map_err(|e| SshError::Channel(format!("sftp mkdir: {e}")));
         let _ = sftp.close().await;
-        Ok(())
+        result
     }
 
     pub async fn remove(&self, session_id: &str, path: &str, directory: bool) -> Result<(), SshError> {
@@ -167,21 +175,23 @@ impl SftpManager {
             sftp.remove_dir(path).await
         } else {
             sftp.remove_file(path).await
-        };
-        result.map_err(|e| SshError::Channel(format!("sftp remove: {e}")))?;
+        }
+        .map_err(|e| SshError::Channel(format!("sftp remove: {e}")));
         let _ = sftp.close().await;
-        Ok(())
+        result
     }
 
     pub async fn rename(&self, session_id: &str, old_path: &str, new_path: &str) -> Result<(), SshError> {
         let sftp = self.ssh.open_sftp(session_id).await?;
-        sftp.rename(old_path, new_path)
+        let result = sftp
+            .rename(old_path, new_path)
             .await
-            .map_err(|e| SshError::Channel(format!("sftp rename: {e}")))?;
+            .map_err(|e| SshError::Channel(format!("sftp rename: {e}")));
         let _ = sftp.close().await;
-        Ok(())
+        result
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn transfer(
         &self,
         app: &AppHandle,
@@ -307,6 +317,7 @@ impl SftpManager {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn copy_with_progress<R, W>(
     cancelled: &Arc<Mutex<HashSet<String>>>,
     app: &AppHandle,
@@ -377,8 +388,24 @@ pub fn normalize_remote_path(path: &str) -> String {
 
 fn join_remote(root: &str, relative: &str) -> String {
     let root = normalize_remote_path(root);
-    let relative = relative.replace('\\', "/").trim_matches('/').to_string();
+    let relative = sanitize_rel(&relative.replace('\\', "/")).unwrap_or_default();
     if relative.is_empty() { root } else if root == "/" { format!("/{relative}") } else { format!("{root}/{relative}") }
+}
+
+/// 目录递归展开时，规范化相对路径中的 `..` / `.` / 绝对段并拒绝反斜杠，
+/// 防止跨目录写入。`..` 段被跳过，含反斜杠的段使整条路径返回 None。
+fn sanitize_rel(path: &str) -> Option<String> {
+    let mut out = Vec::new();
+    for seg in path.split('/') {
+        if seg.is_empty() || seg == "." || seg == ".." {
+            continue;
+        }
+        if seg.contains('\\') {
+            return None;
+        }
+        out.push(seg);
+    }
+    Some(out.join("/"))
 }
 
 trait EmptyPath {
@@ -393,12 +420,35 @@ impl EmptyPath for String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_remote_path;
+    use super::{join_remote, normalize_remote_path, sanitize_rel};
 
     #[test]
     fn normalizes_remote_paths_for_the_sftp_browser() {
         assert_eq!(normalize_remote_path(""), "/");
         assert_eq!(normalize_remote_path("etc/"), "/etc");
         assert_eq!(normalize_remote_path("/var/log/"), "/var/log");
+    }
+
+    #[test]
+    fn join_remote_blocks_parent_traversal() {
+        // `..` 段被跳过，不会拼出逃逸路径
+        assert_eq!(join_remote("/data", "../etc/passwd"), "/data/etc/passwd");
+        assert_eq!(join_remote("/data", "a/../../b"), "/data/a/b");
+        // 反斜杠被当作分隔符处理，`..\..` 同样被跳过，不会逃逸
+        assert_eq!(join_remote("/data", r"..\..\win"), "/data/win");
+        // 空相对路径保持不变
+        assert_eq!(join_remote("/data", ""), "/data");
+    }
+
+    #[test]
+    fn sanitize_rel_drops_unsafe_segments() {
+        assert_eq!(sanitize_rel("a/b/c").as_deref(), Some("a/b/c"));
+        assert_eq!(sanitize_rel("a/./b").as_deref(), Some("a/b"));
+        // `..` 段被跳过（规范化），不会形成逃逸路径
+        assert_eq!(sanitize_rel("a/../b").as_deref(), Some("a/b"));
+        // 绝对路径段被相对化，防止写入到目标目录之外
+        assert_eq!(sanitize_rel("/etc/passwd").as_deref(), Some("etc/passwd"));
+        // 反斜杠（Windows 风格逃逸）整段拒绝
+        assert_eq!(sanitize_rel(r"a\b"), None);
     }
 }

@@ -139,6 +139,21 @@ brew install lima
 - 自动更新签名：`src-tauri/.signing/devdeck_updater.key`（本地生成，密码 `devdeck-updater-pass`），公钥在 `tauri.conf.json`
 - Sentry：设置环境变量 `DEVDDECK_SENTRY_DSN` 后构建即可启用崩溃上报
 
+## 测试与质量
+
+```bash
+# 后端：单测 + clippy（零告警）
+cd src-tauri && cargo test && cargo clippy --all-targets
+
+# 前端：单测（vitest，含 workspace 去重 / 接口 mock 对齐 / snippet 变量）
+cd frontend && pnpm test        # vitest run
+cd frontend && npx tsc --noEmit # 类型检查
+```
+
+- **接口对齐测试**：`frontend/src/lib/__tests__/api.test.ts` 锁定前端 invoke 命令名与 mock handler 一致（均需与 Rust 后端 `invoke_handler` 下划线命名对齐），防止“真实运行断接口、mock 却正常”的命名漂移
+- **workspace 行为测试**：`frontend/src/stores/__tests__/workspace.test.ts` 覆盖 openTab 去重（panel/dashboard/容器 exec/本地终端）、closeTab 释放会话等核心逻辑
+- **CI 质量门**：`quality.yml` = 后端 cargo test + 能耗基线 + 前端 tsc + vitest + build；`release.yml` = tag 触发公证发布
+
 ## License
 
 MIT（待定）

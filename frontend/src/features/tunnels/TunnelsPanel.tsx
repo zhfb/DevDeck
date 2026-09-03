@@ -140,7 +140,7 @@ export default function TunnelsPanel(_props: PanelProps) {
     }
     try {
       const tunnel: Tunnel = {
-        id: `t-${Date.now().toString(36)}`,
+        id: `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         name: name.trim(),
         type,
         hostId,
@@ -150,8 +150,8 @@ export default function TunnelsPanel(_props: PanelProps) {
         remotePort: type === "socks5" ? 0 : Number(remotePort) || 0,
         status: "stopped",
       };
-      await invoke("tunnels.save", { tunnel });
-      await invoke("tunnels.start", { id: tunnel.id });
+      await invoke("tunnels_save", { tunnel });
+      await invoke("tunnels_start", { id: tunnel.id });
       await queryClient.invalidateQueries({ queryKey: ["tunnels"] });
       toast.success(`隧道「${name}」已创建并启动`);
       setCreateOpen(false);
@@ -162,7 +162,7 @@ export default function TunnelsPanel(_props: PanelProps) {
 
   const removeTunnel = async (t: Tunnel) => {
     try {
-      await invoke("tunnels.delete", { id: t.id });
+      await invoke("tunnels_delete", { id: t.id });
       await queryClient.invalidateQueries({ queryKey: ["tunnels"] });
       toast.success(`隧道「${t.name}」已删除`);
     } catch (err) {

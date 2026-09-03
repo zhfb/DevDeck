@@ -8,6 +8,7 @@ const badgeVariants = cva(
     variants: {
       variant: {
         neutral: "bg-hover-fill text-secondary border border-border-subtle",
+        secondary: "bg-secondary/10 text-secondary border border-border-subtle",
         running: "bg-success-tint text-success",
         paused: "bg-warning-tint text-warning",
         stopped: "bg-hover-fill text-muted",

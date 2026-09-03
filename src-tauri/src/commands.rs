@@ -2,8 +2,24 @@
 //! Keep command names + argument/return shapes in sync with the frontend.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
+
+/// PIN 暴力破解防护：连续失败达到阈值后进入冷却期
+static PIN_FAILURES: AtomicU32 = AtomicU32::new(0);
+/// 冷却截止时间（unix 毫秒），0 表示未锁定
+static PIN_LOCKED_UNTIL: AtomicU64 = AtomicU64::new(0);
+const PIN_MAX_FAILURES: u32 = 5;
+const PIN_LOCKOUT_STEP: u64 = 30; // 每次锁定 30s * 超额次数
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 use crate::infra::db::AppDb;
 use crate::models::*;
@@ -383,6 +399,13 @@ pub async fn hosts_save(
 #[tauri::command]
 pub async fn hosts_delete(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     let db = state.db.lock().await;
+    // 删除主机前先清理 Keychain 中的密码与私钥，避免凭据残留（review-backend-core C1）
+    if let Ok(Some(host)) = db.get_host(&id) {
+        if let Some(account) = host.credential_ref.as_deref() {
+            let _ = crate::infra::keychain::delete_password(account);
+            let _ = crate::infra::keychain::delete_password(&format!("{account}:private-key"));
+        }
+    }
     db.delete_host(&id).map_err(|e| e.to_string())
 }
 
@@ -781,10 +804,29 @@ pub async fn idle_lock_unlock(state: State<'_, AppState>, pin: String) -> CmdRes
     if !cfg.enabled {
         return Ok(true);
     }
-    match stored {
-        Ok(s) => Ok(s == pin),
-        Err(_) => Ok(false),
+    // 暴力破解防护：冷却期内直接拒绝（前端展示剩余等待时间）
+    let now = now_ms();
+    let locked_until = PIN_LOCKED_UNTIL.load(Ordering::Relaxed);
+    if now < locked_until {
+        return Ok(false);
     }
+    let ok = match stored {
+        Ok(s) => s == pin,
+        Err(_) => false,
+    };
+    if ok {
+        PIN_FAILURES.store(0, Ordering::Relaxed);
+        PIN_LOCKED_UNTIL.store(0, Ordering::Relaxed);
+        return Ok(true);
+    }
+    let failures = PIN_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
+    if failures >= PIN_MAX_FAILURES {
+        let extra = failures - PIN_MAX_FAILURES;
+        let lock_ms = (PIN_LOCKOUT_STEP as u64 * (extra as u64 + 1)) * 1000;
+        PIN_LOCKED_UNTIL.store(now + lock_ms, Ordering::Relaxed);
+        PIN_FAILURES.store(0, Ordering::Relaxed);
+    }
+    Ok(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -826,19 +868,40 @@ pub async fn networks_list(state: State<'_, AppState>, engine_id: Option<String>
 // ---------------------------------------------------------------------------
 // container create (P0: 运行新容器表单)
 // ---------------------------------------------------------------------------
+
+/// 运行新容器的完整参数（与前端「运行容器」弹窗一一对应）。
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerCreateSpec {
+    pub engine_id: String,
+    pub name: String,
+    pub image: String,
+    /// 启动命令（覆盖镜像 CMD），如 `nginx -g 'daemon off;'`
+    pub cmd: Option<String>,
+    /// 覆盖镜像 ENTRYPOINT，如 `/usr/local/bin/start.sh --prod`
+    pub entrypoint: Option<String>,
+    /// 环境变量，`KEY=VALUE` 列表
+    pub env: Option<Vec<String>>,
+    /// 端口映射，逗号分隔 `host:container[/proto]`，如 `8080:80,5432:5432`
+    pub ports: Option<String>,
+    /// 卷挂载，`host:container[:ro]` 列表
+    pub volumes: Option<Vec<String>>,
+    /// 网络名（默认 bridge）
+    pub network: Option<String>,
+    /// 重启策略：no / always / on-failure / unless-stopped
+    pub restart: Option<String>,
+    /// 内存上限（MB）
+    pub memory_mb: Option<u64>,
+    /// CPU 数量限制
+    pub cpus: Option<f64>,
+}
+
 #[tauri::command]
 pub async fn containers_create(
     state: State<'_, AppState>,
-    engine_id: String,
-    name: String,
-    image: String,
-    ports: Option<String>,
+    input: ContainerCreateSpec,
 ) -> CmdResult<String> {
-    state
-        .docker
-        .create_container(&engine_id, &name, &image, ports.as_deref().unwrap_or(""))
-        .await
-        .map_err(|e| e.to_string())
+    state.docker.create_container(&input).await.map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------

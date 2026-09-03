@@ -97,22 +97,33 @@ export function ConnectionDialog() {
           rows: 30,
         });
         // UI 超时安全网：无 TOTP 时 15s；有 TOTP 待输入时放宽到 150s
-        const session = await Promise.race([
-          invokePromise,
-          new Promise<never>((_, reject) => {
-            timerRef.current = window.setTimeout(
-              () =>
-                reject(
-                  new Error(
-                    totpRef.current
-                      ? "二次验证超时（150 秒），请重新连接"
-                      : "连接超时（15 秒），请检查主机地址、网络或防火墙"
-                  )
-                ),
-              totpRef.current ? 150000 : 15000
-            );
-          }),
-        ]);
+        let session: { sessionId: string; title: string };
+        try {
+          session = await Promise.race([
+            invokePromise,
+            new Promise<never>((_, reject) => {
+              timerRef.current = window.setTimeout(
+                () =>
+                  reject(
+                    new Error(
+                      totpRef.current
+                        ? "二次验证超时（150 秒），请重新连接"
+                        : "连接超时（15 秒），请检查主机地址、网络或防火墙"
+                    )
+                  ),
+                totpRef.current ? 150000 : 15000
+              );
+            }),
+          ]);
+        } catch (e) {
+          // 超时：后端调用仍可能在后台完成，完成后立即断开，避免连接泄漏
+          invokePromise
+            .then((s) => {
+              void invoke("ssh_disconnect", { sessionId: s.sessionId }).catch(() => {});
+            })
+            .catch(() => {});
+          throw e;
+        }
         openTab({
           kind: "ssh",
           title: session.title || connectTarget.hostName,

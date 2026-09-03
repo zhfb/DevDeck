@@ -12,6 +12,7 @@ import { useUi } from "@/stores/workspace";
 import { EngineBadge } from "@/components/shared";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import type { EmbeddedStatus } from "@/lib/types";
 import {
   Select,
@@ -233,7 +234,7 @@ export default function SettingsPanel(_props: PanelProps) {
 
   const doExport = async () => {
     try {
-      const bundle = await invoke<Record<string, unknown>>("config.export");
+      const bundle = await invoke<Record<string, unknown>>("config_export");
       const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const blob = new Blob([JSON.stringify(bundle, null, 2)], {
         type: "application/json",
@@ -259,7 +260,7 @@ export default function SettingsPanel(_props: PanelProps) {
       const text = await file.text();
       const bundle = JSON.parse(text);
       setImporting(true);
-      await invoke("config.import", { bundle });
+      await invoke("config_import", { bundle });
       toast.success("配置导入成功", {
         description: "主机 / 分组 / 隧道 / 片段 / 镜像仓库已恢复",
       });

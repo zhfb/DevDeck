@@ -335,7 +335,7 @@ function genHistory(hostId: string, points = 60): HostStatsHistoryPoint[] {
 // Mock command handlers
 // ---------------------------------------------------------------------------
 export const mockHandlers: Record<string, (a: any) => unknown> = {
-  "engines.list": async () => mockEngines,
+  "engines_list": async () => mockEngines,
   // 内置 Docker 引擎（浏览器 mock：模拟"未安装/未启动"，Tauri 里走真实 limactl）
   "embedded_status": async (): Promise<EmbeddedStatus> => ({
     installed: false,
@@ -385,9 +385,9 @@ export const mockHandlers: Record<string, (a: any) => unknown> = {
     dockerVersion: null,
     error: null,
   }),
-  "hosts.list": async () => mockHosts,
-  "hosts.groups": async () => mockGroups,
-  "hosts.save": async ({ host, password }: { host: Host; password?: string | null }) => {
+  "hosts_list": async () => mockHosts,
+  "hosts_groups": async () => mockGroups,
+  "hosts_save": async ({ host, password }: { host: Host; password?: string | null }) => {
     await sleep(400);
     const exists = mockHosts.findIndex((h) => h.id === host.id);
     if (exists >= 0) mockHosts[exists] = host;
@@ -398,30 +398,36 @@ export const mockHandlers: Record<string, (a: any) => unknown> = {
     }
     return { ok: true };
   },
-  "hosts.stats": async ({ hostId }: { hostId: string }) => mockHostStats.get(hostId) ?? null,
-  "hosts.stats_history": async ({ hostId }: { hostId: string }) => genHistory(hostId),
-  "containers.list": async ({ engineId }: { engineId?: string }) =>
+  "hosts_delete": async ({ id }: { id: string }) => {
+    await sleep(300);
+    const idx = mockHosts.findIndex((h) => h.id === id);
+    if (idx >= 0) mockHosts.splice(idx, 1);
+    return { ok: true };
+  },
+  "hosts_stats": async ({ hostId }: { hostId: string }) => mockHostStats.get(hostId) ?? null,
+  "hosts_stats_history": async ({ hostId }: { hostId: string }) => genHistory(hostId),
+  "containers_list": async ({ engineId }: { engineId?: string }) =>
     engineId ? mockContainers.filter((c) => c.engineId === engineId) : mockContainers,
-  "containers.get": async ({ id }: { id: string }) => mockContainers.find((c) => c.id === id) ?? null,
-  "images.list": async ({ engineId }: { engineId?: string }) =>
+  "containers_get": async ({ id }: { id: string }) => mockContainers.find((c) => c.id === id) ?? null,
+  "images_list": async ({ engineId }: { engineId?: string }) =>
     engineId ? mockImages.filter((i) => i.engineId === engineId) : mockImages,
-  "volumes.list": async () => mockVolumes,
-  "networks.list": async () => mockNetworks,
-  "registries.list": async () => mockRegistries,
-  "registry.repos": async ({ id }: { id: string }) =>
+  "volumes_list": async () => mockVolumes,
+  "networks_list": async () => mockNetworks,
+  "registries_list": async () => mockRegistries,
+  "registry_repos": async ({ id }: { id: string }) =>
     mockRegistries
       .filter((r) => r.id === id)
       .map((r) => {
         const host = r.url.replace(/^https?:\/\//, "").split(":")[0];
         return { name: `${host}/devdeck-demo`, tags: ["latest", "v1.0.0", "v1.1.0"] };
       }),
-  "registry.tags": async () => ["latest", "v1.0.0", "v1.1.0"],
-  "registry.ping": async () => "v2",
-  "host.processes": async ({ hostId }: { hostId: string }) => mockProcesses.filter((p) => p.hostId === hostId),
-  "snippets.list": async () => mockSnippets,
-  "tunnels.list": async () => mockTunnels,
-  "tunnels.get": async ({ id }: { id: string }) => mockTunnels.find((t) => t.id === id) ?? null,
-  "ssh.sessions": async () => [] as SshSession[],
+  "registry_tags": async () => ["latest", "v1.0.0", "v1.1.0"],
+  "registry_ping": async () => "v2",
+  "host_processes": async ({ hostId }: { hostId: string }) => mockProcesses.filter((p) => p.hostId === hostId),
+  "snippets_list": async () => mockSnippets,
+  "tunnels_list": async () => mockTunnels,
+  "tunnels_get": async ({ id }: { id: string }) => mockTunnels.find((t) => t.id === id) ?? null,
+  "ssh_sessions": async () => [] as SshSession[],
   "ssh_auth_respond": async () => ({ ok: true }),
   "ssh_broadcast": async ({ sessionIds }: { sessionIds: string[] }) => sessionIds.length,
   "auto_forward_set": async () => ({ ok: true }),
@@ -444,7 +450,7 @@ export const mockHandlers: Record<string, (a: any) => unknown> = {
     mockContainers.map((c) => ({ ...c, engineId: `ssh:${hostId}` })),
   "remote_docker_images": async ({ hostId }: { hostId: string }) =>
     mockImages.map((i) => ({ ...i, engineId: `ssh:${hostId}` })),
-  "app.info": async () => ({ version: "0.1.0", backend: "mock", platform: navigator.platform }),
+  "app_info": async () => ({ version: "0.1.0", backend: "mock", platform: navigator.platform }),
   "updater_check": async () => ({
     available: false,
     currentVersion: "0.1.0",
@@ -519,7 +525,7 @@ mockHandlers["sftp_transfer_batch"] = async ({ input }: { input: { direction: "u
 };
 
 // Mutation handlers — simulate latency + state change, keep UI responsive
-mockHandlers["containers.start"] = async ({ id }: { id: string }) => {
+mockHandlers["containers_start"] = async ({ id }: { id: string }) => {
   await sleep(600);
   const c = mockContainers.find((x) => x.id === id);
   if (c) {
@@ -529,7 +535,7 @@ mockHandlers["containers.start"] = async ({ id }: { id: string }) => {
   }
   return { ok: true };
 };
-mockHandlers["containers.stop"] = async ({ id }: { id: string }) => {
+mockHandlers["containers_stop"] = async ({ id }: { id: string }) => {
   await sleep(600);
   const c = mockContainers.find((x) => x.id === id);
   if (c) {
@@ -538,7 +544,7 @@ mockHandlers["containers.stop"] = async ({ id }: { id: string }) => {
   }
   return { ok: true };
 };
-mockHandlers["containers.restart"] = async ({ id }: { id: string }) => {
+mockHandlers["containers_restart"] = async ({ id }: { id: string }) => {
   await sleep(900);
   const c = mockContainers.find((x) => x.id === id);
   if (c) {
@@ -548,7 +554,7 @@ mockHandlers["containers.restart"] = async ({ id }: { id: string }) => {
   }
   return { ok: true };
 };
-mockHandlers["containers.pause"] = async ({ id }: { id: string }) => {
+mockHandlers["containers_pause"] = async ({ id }: { id: string }) => {
   await sleep(400);
   const c = mockContainers.find((x) => x.id === id);
   if (c) {
@@ -557,14 +563,15 @@ mockHandlers["containers.pause"] = async ({ id }: { id: string }) => {
   }
   return { ok: true };
 };
-mockHandlers["containers.remove"] = async ({ id }: { id: string }) => {
+mockHandlers["containers_remove"] = async ({ id }: { id: string }) => {
   await sleep(700);
   const i = mockContainers.findIndex((x) => x.id === id);
   if (i >= 0) mockContainers.splice(i, 1);
   return { ok: true };
 };
-mockHandlers["containers.create"] = async ({ name, image, ports }: { name: string; image: string; ports?: string }) => {
+mockHandlers["containers_create"] = async ({ input }: { input: { name: string; image: string } }) => {
   await sleep(700);
+  const { name, image } = input;
   mockContainers.push({
     id: `new-${Date.now().toString(36)}`,
     name,
@@ -578,42 +585,42 @@ mockHandlers["containers.create"] = async ({ name, image, ports }: { name: strin
   });
   return `new-${Date.now().toString(36)}`;
 };
-mockHandlers["volumes.create"] = async ({ name, driver }: { name: string; driver?: string }) => {
+mockHandlers["volumes_create"] = async ({ name, driver }: { name: string; driver?: string }) => {
   await sleep(400);
   mockVolumes.push({ id: `vol-${Date.now().toString(36)}`, name, engineId: "eng-orb", driver: driver ?? "local", mountpoint: "", scope: "local" });
   return { ok: true };
 };
-mockHandlers["volumes.remove"] = async ({ name }: { name: string }) => {
+mockHandlers["volumes_remove"] = async ({ name }: { name: string }) => {
   await sleep(400);
   const i = mockVolumes.findIndex((v) => v.name === name);
   if (i >= 0) mockVolumes.splice(i, 1);
   return { ok: true };
 };
-mockHandlers["networks.create"] = async ({ name, driver }: { name: string; driver?: string }) => {
+mockHandlers["networks_create"] = async ({ name, driver }: { name: string; driver?: string }) => {
   await sleep(400);
   mockNetworks.push({ id: `nw-${Date.now().toString(36)}`, name, engineId: "eng-orb", driver: driver ?? "bridge", scope: "local", containers: 0 });
   return { ok: true };
 };
-mockHandlers["networks.remove"] = async ({ id }: { id: string }) => {
+mockHandlers["networks_remove"] = async ({ id }: { id: string }) => {
   await sleep(400);
   const i = mockNetworks.findIndex((n) => n.id === id);
   if (i >= 0) mockNetworks.splice(i, 1);
   return { ok: true };
 };
-mockHandlers["snippets.save"] = async ({ snippet }: { snippet: Snippet }) => {
+mockHandlers["snippets_save"] = async ({ snippet }: { snippet: Snippet }) => {
   await sleep(200);
   const i = mockSnippets.findIndex((s) => s.id === snippet.id);
   if (i >= 0) mockSnippets[i] = snippet;
   else mockSnippets.unshift(snippet);
   return { ok: true };
 };
-mockHandlers["snippets.delete"] = async ({ id }: { id: string }) => {
+mockHandlers["snippets_delete"] = async ({ id }: { id: string }) => {
   await sleep(200);
   const i = mockSnippets.findIndex((s) => s.id === id);
   if (i >= 0) mockSnippets.splice(i, 1);
   return { ok: true };
 };
-mockHandlers["tunnels.start"] = async ({ id }: { id: string }) => {
+mockHandlers["tunnels_start"] = async ({ id }: { id: string }) => {
   await sleep(800);
   const t = mockTunnels.find((x) => x.id === id);
   if (t) {
@@ -622,13 +629,13 @@ mockHandlers["tunnels.start"] = async ({ id }: { id: string }) => {
   }
   return { ok: true };
 };
-mockHandlers["images.remove"] = async ({ engineId, id }: { engineId: string; id: string }) => {
+mockHandlers["images_remove"] = async ({ engineId, id }: { engineId: string; id: string }) => {
   await sleep(600);
   const i = mockImages.findIndex((x) => x.id === id && x.engineId === engineId);
   if (i >= 0) mockImages.splice(i, 1);
   return { ok: true };
 };
-mockHandlers["tunnels.stop"] = async ({ id }: { id: string }) => {
+mockHandlers["tunnels_stop"] = async ({ id }: { id: string }) => {
   await sleep(400);
   const t = mockTunnels.find((x) => x.id === id);
   if (t) t.status = "stopped";
@@ -660,7 +667,7 @@ const mockEvents = {
 
 // Image pull mock — mirrors the Rust event contract so the task queue remains
 // explorable in browser mode.
-mockHandlers["registries.save"] = async ({ registry, password }: { registry: RegistryConfig; password?: string | null }) => {
+mockHandlers["registries_save"] = async ({ registry, password }: { registry: RegistryConfig; password?: string | null }) => {
   const existing = mockRegistries.findIndex((r) => r.id === registry.id);
   if (existing >= 0) {
     mockRegistries[existing] = { ...registry, credentialRef: password ? "mock-keychain" : registry.credentialRef };
@@ -670,24 +677,24 @@ mockHandlers["registries.save"] = async ({ registry, password }: { registry: Reg
   return { ok: true };
 };
 
-mockHandlers["registries.delete"] = async ({ id }: { id: string }) => {
+mockHandlers["registries_delete"] = async ({ id }: { id: string }) => {
   const idx = mockRegistries.findIndex((r) => r.id === id);
   if (idx >= 0) mockRegistries.splice(idx, 1);
   return { ok: true };
 };
 
-mockHandlers["config.export"] = async () => ({
+mockHandlers["config_export"] = async () => ({
   app: "devdeck",
   schemaVersion: 1,
   exportedAt: new Date().toISOString(),
-  hostGroups: mockHostGroups,
+  hostGroups: mockGroups,
   hosts: mockHosts,
   tunnels: mockTunnels,
   snippets: mockSnippets,
   registries: mockRegistries,
 });
 
-mockHandlers["config.import"] = async ({ bundle }: { bundle: { app?: string } }) => {
+mockHandlers["config_import"] = async ({ bundle }: { bundle: { app?: string } }) => {
   if (bundle?.app !== "devdeck") throw new Error("不是有效的 DevDeck 配置文件");
   return { groups: 1, hosts: 2, tunnels: 1, snippets: 3, registries: 1 };
 };
@@ -699,8 +706,8 @@ let mockIdleLock: IdleLockConfig = {
   hasPin: true,
 };
 
-mockHandlers["idle_lock_config.get"] = async () => mockIdleLock;
-mockHandlers["idle_lock_config.set"] = async ({
+mockHandlers["idle_lock_config_get"] = async () => mockIdleLock;
+mockHandlers["idle_lock_config_set"] = async ({
   enabled,
   timeoutMinutes,
   useTouchId,
@@ -720,15 +727,15 @@ mockHandlers["idle_lock_config.set"] = async ({
   };
   return { ok: true };
 };
-mockHandlers["idle_lock.unlock"] = async ({ pin }: { pin: string }) => pin === "1234";
+mockHandlers["idle_lock_unlock"] = async ({ pin }: { pin: string }) => pin === "1234";
 
-mockHandlers["sudo_config.get"] = async () => true;
-mockHandlers["sudo_config.set"] = async () => ({});
+mockHandlers["sudo_config_get"] = async () => true;
+mockHandlers["sudo_config_set"] = async () => ({});
 
 mockHandlers["local_shell_start"] = async () => `local-mock-${Date.now().toString(36)}`;
 mockHandlers["local_shell_stop"] = async () => ({ ok: true });
 
-mockHandlers["images.pull"] = async ({ image }: { image: string }) => {
+mockHandlers["images_pull"] = async ({ image }: { image: string }) => {
   const taskId = `pull-mock-${Date.now().toString(36)}`;
   void (async () => {
     for (const [percent, status] of [

@@ -76,6 +76,12 @@ impl PowerManager {
     }
 }
 
+impl Default for PowerManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{PowerState, SamplingPolicy};
@@ -83,22 +89,22 @@ mod tests {
     #[test]
     fn active_policy_keeps_fast_refresh() {
         assert_eq!(SamplingPolicy::for_state(PowerState::Active).stats_interval_secs, Some(5));
-        assert_eq!(SamplingPolicy::for_state(PowerState::Active).render_events, true);
+        assert!(SamplingPolicy::for_state(PowerState::Active).render_events);
     }
 
     #[test]
     fn background_policy_keeps_connections_but_slows_work() {
         let policy = SamplingPolicy::for_state(PowerState::Background);
         assert_eq!(policy.stats_interval_secs, Some(30));
-        assert_eq!(policy.render_events, false);
-        assert_eq!(policy.keep_connections, true);
+        assert!(!policy.render_events);
+        assert!(policy.keep_connections);
     }
 
     #[test]
     fn idle_policy_stops_optional_sampling_but_keeps_connections() {
         let policy = SamplingPolicy::for_state(PowerState::Idle);
         assert_eq!(policy.stats_interval_secs, None);
-        assert_eq!(policy.render_events, false);
-        assert_eq!(policy.keep_connections, true);
+        assert!(!policy.render_events);
+        assert!(policy.keep_connections);
     }
 }

@@ -127,7 +127,7 @@ export default function RegistryPanel() {
     saveRegistry.mutate(
       {
         registry: {
-          id: editingId ?? `reg-${Date.now().toString(36)}`,
+          id: editingId ?? `reg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
           name,
           url,
           username: form.username.trim(),
@@ -160,7 +160,7 @@ export default function RegistryPanel() {
   };
 
   const testConnection = (r: RegistryConfig) => {
-    invoke<string>("registry.ping", { id: r.id })
+    invoke<string>("registry_ping", { id: r.id })
       .then(() => toast.success(`连接成功：${r.name} (Registry API v2)`))
       .catch((e) => toast.error(`连接失败：${r.name}`, { description: String(e) }));
   };

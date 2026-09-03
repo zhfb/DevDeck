@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Folder, FolderOpen, FolderTree, HardDriveDownload, HardDriveUpload, RefreshCw, File } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
 import { invoke, onEvent } from "@/lib/api";
@@ -103,8 +103,11 @@ export default function SftpPanel(_props: PanelProps) {
 
   useEffect(() => { void reload(); }, [localPath, remotePath, sessionId]);
 
+  const disposedRef = useRef(false);
   useEffect(() => {
-    let cleanup: (() => void) | undefined;
+    disposedRef.current = false;
+    let unlisten: (() => void) | undefined;
+    let batchUnlisten: (() => void) | undefined;
     void onEvent<TransferEvent>("sftp:progress", (event) => {
       const task = useTaskStore.getState().tasks.find((item) => item.id === event.taskId);
       if (!task) return;
@@ -113,8 +116,10 @@ export default function SftpPanel(_props: PanelProps) {
         status: event.state === "done" ? "done" : event.state === "error" ? "error" : "running",
         detail: event.error ?? `${event.direction === "upload" ? "上传" : "下载"} ${event.completedBytes ?? 0}/${event.totalBytes ?? 0}`,
       });
-    }).then((unlisten) => { cleanup = unlisten; });
-    let batchCleanup: (() => void) | undefined;
+    }).then((u) => {
+      if (disposedRef.current) { u(); return; }
+      unlisten = u;
+    });
     void onEvent<BatchTransferEvent>("sftp:batch-progress", (event) => {
       const task = useTaskStore.getState().tasks.find((item) => item.id === event.taskId);
       if (!task) return;
@@ -123,8 +128,15 @@ export default function SftpPanel(_props: PanelProps) {
         status: event.state,
         detail: event.failed ? `${event.completed}/${event.total}，失败 ${event.failed} 个` : `${event.completed}/${event.total} 个文件已完成`,
       });
-    }).then((unlisten) => { batchCleanup = unlisten; });
-    return () => { cleanup?.(); batchCleanup?.(); };
+    }).then((u) => {
+      if (disposedRef.current) { u(); return; }
+      batchUnlisten = u;
+    });
+    return () => {
+      disposedRef.current = true;
+      unlisten?.();
+      batchUnlisten?.();
+    };
   }, [updateTask]);
 
   const startTransfer = async (direction: "upload" | "download") => {

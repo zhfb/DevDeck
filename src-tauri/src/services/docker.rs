@@ -51,12 +51,21 @@ const SOCKET_CANDIDATES: &[(&str, &str)] = &[
     ("podman", "$XDG_RUNTIME_DIR/podman/podman.sock"),
 ];
 
+/// 单个 exec 会话通道：(client, exec_id, 输入写入端)
+type ExecChannel = (Docker, String, std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send>>);
+
 pub struct DockerManager {
     /// engine_id → Docker client (local engines only for now)
     engines: Mutex<HashMap<String, Docker>>,
     /// engine_id → metadata
     meta: Mutex<HashMap<String, DockerEngine>>,
-    execs: Mutex<HashMap<String, (Docker, String, std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send>>) >>,
+    execs: Mutex<HashMap<String, ExecChannel>>,
+}
+
+impl Default for DockerManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DockerManager {
@@ -369,22 +378,20 @@ impl DockerManager {
     }
 
     // ---- container create (P0: 运行新容器表单) ----
-    /// Create and start a container from an image with a simple port mapping
-    /// spec (`"8080:80, 3000:80/udp"`, host:container). Exposed ports without
+    /// Create and start a container from a full [`ContainerCreateSpec`].
+    ///
+    /// Ports: `"8080:80, 3000:80/udp"` (host:container). Exposed ports without
     /// a host mapping are published on random host ports by Docker.
     pub async fn create_container(
         &self,
-        engine_id: &str,
-        name: &str,
-        image: &str,
-        ports: &str,
+        spec: &crate::commands::ContainerCreateSpec,
     ) -> Result<String, DockerError> {
-        let client = self.client(engine_id).await?;
+        let client = self.client(&spec.engine_id).await?;
 
         let mut exposed_ports: HashMap<String, HashMap<(), ()>> = HashMap::new();
         let mut port_bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
-        for spec in ports.split(',') {
-            let spec = spec.trim();
+        for p in spec.ports.as_deref().unwrap_or("").split(',') {
+            let spec = p.trim();
             if spec.is_empty() {
                 continue;
             }
@@ -409,17 +416,70 @@ impl DockerManager {
             }
         }
 
+        // 启动命令 / entrypoint：使用 POSIX 词法拆分，支持引号包裹的参数
+        let cmd = spec.cmd.as_deref().map(split_command).transpose()?.flatten();
+        let entrypoint = spec.entrypoint.as_deref().map(split_command).transpose()?.flatten();
+
+        // 卷挂载：透传 "host:container[:ro]"，空串过滤
+        let binds: Option<Vec<String>> = spec
+            .volumes
+            .as_ref()
+            .map(|vs| {
+                vs.iter()
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .collect()
+            })
+            .filter(|vs: &Vec<String>| !vs.is_empty());
+
+        // 重启策略
+        let restart_policy = match spec.restart.as_deref().unwrap_or("no") {
+            "" | "no" => None,
+            "always" => Some(bollard::models::RestartPolicy {
+                name: Some(bollard::models::RestartPolicyNameEnum::ALWAYS),
+                maximum_retry_count: None,
+            }),
+            "on-failure" => Some(bollard::models::RestartPolicy {
+                name: Some(bollard::models::RestartPolicyNameEnum::ON_FAILURE),
+                maximum_retry_count: Some(5),
+            }),
+            "unless-stopped" => Some(bollard::models::RestartPolicy {
+                name: Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED),
+                maximum_retry_count: None,
+            }),
+            other => {
+                return Err(DockerError::Bollard(bollard::errors::Error::IOError {
+                    err: std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("unsupported restart policy: {other}"),
+                    ),
+                }));
+            }
+        };
+
+        // 内存/CPU 限制
+        let memory = spec.memory_mb.map(|mb| (mb as i64) * 1024 * 1024);
+        let nano_cpus = spec.cpus.map(|c| (c * 1_000_000_000.0) as i64);
+
         let config = Config {
-            image: Some(image.to_string()),
-            hostname: Some(name.to_string()),
+            image: Some(spec.image.clone()),
+            hostname: Some(spec.name.clone()),
+            cmd,
+            entrypoint,
+            env: spec.env.clone(),
             exposed_ports: Some(exposed_ports),
             host_config: Some(HostConfig {
                 port_bindings: Some(port_bindings),
+                binds,
+                network_mode: spec.network.clone(),
+                restart_policy,
+                memory,
+                nano_cpus,
                 ..Default::default()
             }),
             ..Default::default()
         };
-        let options = CreateContainerOptions { name: name.to_string(), platform: None };
+        let options = CreateContainerOptions { name: spec.name.clone(), platform: None };
         let created = client.create_container(Some(options), config).await?;
         client.start_container::<String>(&created.id, None).await?;
         Ok(created.id)
@@ -587,7 +647,7 @@ impl DockerManager {
         let (client, exec_id, _) = execs
             .get(session_id)
             .ok_or_else(|| DockerError::EngineNotFound(format!("exec session not found: {session_id}")))?;
-        client.resize_exec(exec_id, ResizeExecOptions { height: rows as u16, width: cols as u16 }).await?;
+        client.resize_exec(exec_id, ResizeExecOptions { height: rows, width: cols }).await?;
         Ok(())
     }
 
@@ -788,46 +848,6 @@ fn pull_progress(info: &CreateImageInfo) -> Option<PullProgress> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::pull_progress;
-    use bollard::models::{CreateImageInfo, ProgressDetail};
-
-    #[test]
-    fn pull_progress_converts_layer_bytes_to_percentage_and_detail() {
-        let info = CreateImageInfo {
-            id: Some("layer-1".to_string()),
-            status: Some("Downloading".to_string()),
-            progress: Some("[=====>             ]".to_string()),
-            progress_detail: Some(ProgressDetail {
-                current: Some(25),
-                total: Some(100),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        let progress = pull_progress(&info).expect("progress frame");
-
-        assert_eq!(progress.percent, Some(25));
-        assert_eq!(progress.status, "Downloading");
-        assert_eq!(progress.detail.as_deref(), Some("layer-1"));
-    }
-
-    #[test]
-    fn pull_progress_keeps_status_frames_without_byte_totals() {
-        let info = CreateImageInfo {
-            status: Some("Pulling from library/alpine".to_string()),
-            ..Default::default()
-        };
-
-        let progress = pull_progress(&info).expect("status frame");
-
-        assert_eq!(progress.percent, None);
-        assert_eq!(progress.status, "Pulling from library/alpine");
-    }
-}
-
 async fn list_containers_inner(docker: &Docker, engine_id: &str) -> Result<Vec<Container>, DockerError> {
     let opts = ListContainersOptions::<String> {
         all: true,
@@ -923,5 +943,86 @@ fn engine_display_name(kind: &str) -> String {
         "podman" => "本地引擎 (Podman)".to_string(),
         "embedded" => "内置引擎 (Docker)".to_string(),
         _ => kind.to_string(),
+    }
+}
+
+/// POSIX 风格词法拆分命令行，支持引号/转义包裹的参数。
+/// 空输入返回 `Ok(None)`（不覆盖镜像默认 CMD/ENTRYPOINT）。
+fn split_command(cmd: &str) -> Result<Option<Vec<String>>, DockerError> {
+    let trimmed = cmd.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let args = shell_words::split(trimmed).map_err(|e| {
+        DockerError::Bollard(bollard::errors::Error::IOError {
+            err: std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("命令解析失败: {e}")),
+        })
+    })?;
+    if args.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(args))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pull_progress, split_command};
+    use bollard::models::{CreateImageInfo, ProgressDetail};
+
+    #[test]
+    fn pull_progress_converts_layer_bytes_to_percentage_and_detail() {
+        let info = CreateImageInfo {
+            id: Some("layer-1".to_string()),
+            status: Some("Downloading".to_string()),
+            progress: Some("[=====>             ]".to_string()),
+            progress_detail: Some(ProgressDetail {
+                current: Some(25),
+                total: Some(100),
+            }),
+            ..Default::default()
+        };
+
+        let progress = pull_progress(&info).expect("progress frame");
+
+        assert_eq!(progress.percent, Some(25));
+        assert_eq!(progress.status, "Downloading");
+        assert_eq!(progress.detail.as_deref(), Some("layer-1"));
+    }
+
+    #[test]
+    fn pull_progress_keeps_status_frames_without_byte_totals() {
+        let info = CreateImageInfo {
+            status: Some("Pulling from library/alpine".to_string()),
+            ..Default::default()
+        };
+
+        let progress = pull_progress(&info).expect("status frame");
+
+        assert_eq!(progress.percent, None);
+        assert_eq!(progress.status, "Pulling from library/alpine");
+    }
+
+    #[test]
+    fn split_command_handles_quoted_arguments() {
+        let args = split_command("nginx -g 'daemon off;'").unwrap().unwrap();
+        assert_eq!(args, vec!["nginx", "-g", "daemon off;"]);
+    }
+
+    #[test]
+    fn split_command_empty_or_whitespace_returns_none() {
+        assert_eq!(split_command("").unwrap(), None);
+        assert_eq!(split_command("   ").unwrap(), None);
+    }
+
+    #[test]
+    fn split_command_plain_words() {
+        let args = split_command("sh -c 'echo hello world'").unwrap().unwrap();
+        assert_eq!(args, vec!["sh", "-c", "echo hello world"]);
+    }
+
+    #[test]
+    fn split_command_unbalanced_quote_is_an_error() {
+        assert!(split_command("echo \"unterminated").is_err());
     }
 }

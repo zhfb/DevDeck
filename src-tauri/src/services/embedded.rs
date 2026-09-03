@@ -158,16 +158,14 @@ impl EmbeddedEngine {
             return st;
         };
         st.installed = true;
-        if let Ok(out) = timeout(
+        if let Ok(Ok(o)) = timeout(
             Duration::from_secs(8),
             Command::new(&bin).arg("--version").output(),
         )
         .await
         {
-            if let Ok(o) = out {
-                st.limactl_version =
-                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string());
-            }
+            st.limactl_version =
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string());
         }
         st.machine_created = self.machine_created().await;
         st.running = self.running().await;

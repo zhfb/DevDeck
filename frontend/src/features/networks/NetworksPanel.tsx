@@ -60,7 +60,7 @@ export default function NetworksPanel(_props: PanelProps) {
   const submitCreate = () => {
     if (!newName.trim()) return;
     networkAction.mutate(
-      { action: "create", name: newName.trim() },
+      { action: "create", name: newName.trim(), driver: newDriver.trim() || undefined },
       {
         onSuccess: () => {
           toast.success(`已创建网络 ${newName.trim()}`);

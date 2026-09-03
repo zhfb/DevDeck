@@ -110,17 +110,29 @@ export default function ContainerDetail({
     });
   };
 
+  const disposedRef = useRef(false);
   useEffect(() => {
     if (!container || !isTauri) return;
-    let cleanup: (() => void) | undefined;
+    disposedRef.current = false;
+    let unlisten: (() => void) | undefined;
     void onEvent<{ containerId: string; line: string }>("docker:logs", (event) => {
       if (event.containerId !== container.id) return;
       setLiveLogs((lines) => [...lines, event.line].slice(-500));
-    }).then((unlisten) => { cleanup = unlisten; });
+    }).then((u) => {
+      if (disposedRef.current) {
+        // 组件已卸载：订阅刚建立就立即解除，避免泄漏
+        u();
+        return;
+      }
+      unlisten = u;
+    });
     void invoke("containers_logs", { engineId: container.engineId, containerId: container.id }).catch((e) => {
       setLiveLogs([`[DevDeck] 日志连接失败：${String(e)}`]);
     });
-    return () => cleanup?.();
+    return () => {
+      disposedRef.current = true;
+      unlisten?.();
+    };
   }, [container?.id, container?.engineId]);
 
   // Simulated streaming log — auto scroll to bottom on mount

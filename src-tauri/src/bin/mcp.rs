@@ -27,12 +27,53 @@ const SERVER_NAME: &str = "devdeck-mcp";
 const SERVER_VERSION: &str = "0.1.0";
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// 单次命令输出上限，防止高日志量容器导致内存耗尽
+const MAX_OUTPUT: usize = 4 * 1024 * 1024;
+
+/// 引号感知的命令行拆分：支持 `sh -c "echo a && b"`、`echo "hello world"` 等写法
+fn shell_words_split(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let chars = command.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut has_word = false;
+    for c in chars {
+        match c {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                has_word = true;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                has_word = true;
+            }
+            ' ' | '\t' | '\n' if !in_single && !in_double => {
+                if has_word {
+                    words.push(std::mem::take(&mut cur));
+                    has_word = false;
+                }
+            }
+            _ => {
+                cur.push(c);
+                has_word = true;
+            }
+        }
+    }
+    if has_word {
+        words.push(cur);
+    }
+    words
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let socket = std::env::var("DEVDeck_DOCKER_SOCKET").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-        format!("{home}/.lima/devdeck/sock/docker.sock")
-    });
+    let socket = std::env::var("DEVDDECK_DOCKER_SOCKET")
+        .or_else(|_| std::env::var("DEVDeck_DOCKER_SOCKET"))
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            format!("{home}/.lima/devdeck/sock/docker.sock")
+        });
     let docker = if Path::new(&socket).exists() {
         Docker::connect_with_local(&socket, 9600, API_DEFAULT_VERSION)?
     } else {
@@ -46,7 +87,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if line.trim().is_empty() {
             continue;
         }
-        let msg: Value = serde_json::from_str(&line)?;
+        // 非法 JSON 不应使 Server 崩溃：按 JSON-RPC 规范返回 -32700 parse error 并继续（review-backend-core C2）
+        let msg: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(e) => {
+                let payload = json!({
+                    "jsonrpc": "2.0",
+                    "id": null,
+                    "error": { "code": -32700, "message": format!("parse error: {e}") }
+                });
+                writeln!(stdout, "{payload}")?;
+                stdout.flush()?;
+                continue;
+            }
+        };
         let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
         let id = msg.get("id").cloned();
         match method {
@@ -219,7 +273,7 @@ async fn handle_tool(
                 .get("tail")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(200)
-                .max(1);
+                .clamp(1, 10000);
             let opts = LogsOptions::<String> {
                 stdout: true,
                 stderr: true,
@@ -231,6 +285,10 @@ async fn handle_tool(
             while let Some(chunk) = stream.next().await {
                 match chunk? {
                     LogOutput::StdOut { message } | LogOutput::StdErr { message } => {
+                        if out.len() >= MAX_OUTPUT {
+                            out.push_str("\n... [输出已截断，超过 4MB]");
+                            break;
+                        }
                         out.push_str(&String::from_utf8_lossy(&message));
                     }
                     _ => {}
@@ -241,7 +299,7 @@ async fn handle_tool(
         "docker_exec" => {
             let container = arg_str("container");
             let command = arg_str("command");
-            let cmd: Vec<&str> = command.split_whitespace().collect();
+            let cmd = shell_words_split(&command);
             if cmd.is_empty() {
                 return Err("command 不能为空".into());
             }
@@ -251,7 +309,7 @@ async fn handle_tool(
                     CreateExecOptions {
                         attach_stdout: Some(true),
                         attach_stderr: Some(true),
-                        cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
+                        cmd: Some(cmd),
                         ..Default::default()
                     },
                 )
@@ -263,6 +321,10 @@ async fn handle_tool(
                     while let Some(chunk) = output.next().await {
                         match chunk? {
                             LogOutput::StdOut { message } | LogOutput::StdErr { message } => {
+                                if out.len() >= MAX_OUTPUT {
+                                    out.push_str("\n... [输出已截断，超过 4MB]");
+                                    break;
+                                }
                                 out.push_str(&String::from_utf8_lossy(&message));
                             }
                             _ => {}
@@ -286,5 +348,59 @@ async fn handle_tool(
             Ok(serde_json::to_string_pretty(&list)?)
         }
         _ => Err(format!("未知工具: {name}").into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exposes_expected_tool_set() {
+        let value = tools();
+        let arr = value.as_array().expect("tools() must return array");
+        assert_eq!(arr.len(), 10, "应暴露 10 个工具");
+        let names: Vec<&str> = arr
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        for required in [
+            "docker_list_containers",
+            "docker_list_images",
+            "docker_start_container",
+            "docker_stop_container",
+            "docker_restart_container",
+            "docker_logs",
+            "docker_exec",
+            "docker_inspect",
+            "docker_list_volumes",
+            "docker_list_networks",
+        ] {
+            assert!(names.contains(&required), "缺少工具 {required}");
+        }
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len(), "工具名必须唯一");
+    }
+
+    #[test]
+    fn tools_have_complete_schema() {
+        let value = tools();
+        for tool in value.as_array().unwrap() {
+            assert!(tool["name"].is_string(), "name 必须是字符串");
+            assert!(tool["description"].is_string(), "description 必须是字符串");
+            assert!(tool["inputSchema"].is_object(), "inputSchema 必须是对象");
+        }
+    }
+
+    #[test]
+    fn exec_and_logs_require_container() {
+        let value = tools();
+        let arr = value.as_array().unwrap();
+        let exec = arr.iter().find(|t| t["name"] == "docker_exec").unwrap();
+        let req = exec["inputSchema"]["required"].as_array().unwrap();
+        assert!(req.iter().any(|r| r == "container"));
+        assert!(req.iter().any(|r| r == "command"));
     }
 }

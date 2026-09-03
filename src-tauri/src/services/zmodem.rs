@@ -35,7 +35,7 @@ impl ZmodemManager {
             .and_then(|s| s.to_str())
             .unwrap_or("upload.bin")
             .to_string();
-        let cmd = format!("cd {} 2>/dev/null; rz -b -e; echo", shell_quote(remote_dir));
+        let cmd = format!("cd {} 2>/dev/null && rz -b -e; echo", shell_quote(remote_dir));
         let mut channel = self.ssh.open_exec_channel(host_id, &cmd).await?;
 
         let mut sender = Sender::new().map_err(|e| SshError::Io(format!("zmodem sender: {e}")))?;

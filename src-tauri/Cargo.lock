@@ -1220,6 +1220,7 @@ dependencies = [
  "sentry",
  "serde",
  "serde_json",
+ "shell-words",
  "tauri",
  "tauri-build",
  "tauri-plugin-sentry",

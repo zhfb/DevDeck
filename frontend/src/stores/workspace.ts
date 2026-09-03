@@ -72,7 +72,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
       if (t.kind !== tab.kind) return false;
       if (tab.kind === "panel") return t.panel === tab.panel;
       if (tab.kind === "dashboard") return true;
-      if (tab.kind === "container-detail")
+      if (tab.kind === "container-detail" || tab.kind === "docker-exec")
         return t.hostId === tab.hostId && t.containerId === tab.containerId;
       if (tab.kind === "host-detail") return t.hostId === tab.hostId;
       return t.hostId === tab.hostId;
@@ -89,9 +89,20 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
 
   closeTab(id) {
     const target = get().tabs.find((t) => t.id === id);
+    if (!target) return;
     // 关闭本地终端时清理后端 PTY 子进程
-    if (target?.kind === "local" && target.sessionId) {
+    if (target.kind === "local" && target.sessionId) {
       void invoke("local_shell_stop", { sessionId: target.sessionId }).catch(() => {});
+    }
+    // 关闭 SSH 会话时释放后端连接（避免连接池泄漏）
+    if (target.kind === "ssh" && target.sessionId) {
+      void invoke("ssh_disconnect", { sessionId: target.sessionId }).catch(() => {});
+    }
+    // 拆分窗格中的 SSH 会话逐个释放
+    for (const pane of target.panes ?? []) {
+      if (pane.sessionId) {
+        void invoke("ssh_disconnect", { sessionId: pane.sessionId }).catch(() => {});
+      }
     }
     set((s) => {
       const idx = s.tabs.findIndex((t) => t.id === id);
@@ -194,6 +205,12 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   },
 
   async openLocalTerminal() {
+    // 已打开本地终端时直接激活，避免重复创建 PTY 产生孤儿 shell 进程
+    const existing = get().tabs.find((t) => t.kind === "local");
+    if (existing) {
+      set({ activeTabId: existing.id });
+      return existing.id;
+    }
     const sessionId = await invoke<string>("local_shell_start", { cols: 100, rows: 30 });
     return get().openTab({
       kind: "local",
