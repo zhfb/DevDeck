@@ -43,6 +43,7 @@ interface WorkspaceState {
   runPrefill: { volumes: { name: string; target?: string }[] } | null;
   requestRunWithVolumes: (volumes: { name: string; target?: string }[]) => string;
   clearRunPrefill: () => void;
+  openSsh: (hostId: string, opts?: { title?: string; env?: "dev" | "staging" | "prod" | "none" }) => Promise<string>;
   openTab: (tab: Omit<WorkspaceTab, "id" | "panes"> & { panes?: WorkspaceTab["panes"] }) => string;
   closeTab: (id: string) => void;
   setActiveTab: (id: string) => void;
@@ -85,6 +86,24 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
 
   clearRunPrefill() {
     set({ runPrefill: null });
+  },
+
+  /** 直接打开 SSH 标签：先建真实会话（Keychain 凭据），再 openTab 带上 sessionId，
+   *  避免 TerminalView 因拿不到 sessionId 落到 Mock 演示终端。 */
+  async openSsh(hostId, opts) {
+    const session = await invoke<{ sessionId: string; title: string }>("ssh_connect", {
+      hostId,
+      password: null,
+      cols: 100,
+      rows: 30,
+    });
+    return get().openTab({
+      kind: "ssh",
+      title: opts?.title ?? session.title,
+      hostId,
+      env: opts?.env ?? "none",
+      sessionId: session.sessionId,
+    });
   },
 
   openTab(tab) {

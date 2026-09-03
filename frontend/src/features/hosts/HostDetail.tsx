@@ -140,7 +140,7 @@ export default function HostDetail({ onOpenPanel, hostId }: PanelProps & { hostI
   const { data: tunnels } = useTunnels();
   const { data: processes, isLoading: processesLoading } = useHostProcesses(hostId ?? null);
   const { hostOnline } = useLive();
-  const { openTab } = useWorkspace();
+  const { openSsh } = useWorkspace();
 
   // 远程 Docker over SSH：挂载 docker.sock 后列出远端容器
   const [dockerMounted, setDockerMounted] = useState(false);
@@ -223,9 +223,16 @@ export default function HostDetail({ onOpenPanel, hostId }: PanelProps & { hostI
   const online = host ? (hostOnline[host.id] ?? true) : false; // mock 默认在线
   const last = history && history.length > 0 ? history[history.length - 1] : null;
 
-  const connect = () => {
+  const connect = async () => {
     if (!host) return;
-    openTab({ kind: "ssh", title: host.name, hostId: host.id, env: host.env });
+    try {
+      await openSsh(host.id, { title: host.name, env: host.env });
+    } catch (e) {
+      const msg = String(e);
+      toast.error("SSH 连接失败", {
+        description: msg.includes("Keychain") ? msg : `无法建立到 ${host.name} 的会话：${msg}`,
+      });
+    }
   };
 
   const sysInfo: { label: string; value: string; icon: ReactNode }[] = stats
