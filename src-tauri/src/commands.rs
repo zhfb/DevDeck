@@ -622,14 +622,28 @@ pub async fn registry_ping(state: State<'_, AppState>, id: String) -> CmdResult<
 }
 
 /// 列出仓库（repositories）。可选返回每个仓库的 tag（tags=true 时逐个拉取）。
+/// 若配置了 namespace，则只返回这些命名空间下的仓库（逗号分隔，如 "variety,ceph0618"；
+/// UCloud 等公开目录可能包含海量公共镜像）。
 #[tauri::command]
 pub async fn registry_repos(
     state: State<'_, AppState>,
     id: String,
     with_tags: Option<bool>,
 ) -> CmdResult<Vec<RegistryRepo>> {
-    let (_cfg, client) = registry_client(&state, &id).await?;
-    let repos = client.catalog().await.map_err(|e| e.to_string())?;
+    let (cfg, client) = registry_client(&state, &id).await?;
+    let mut repos = client.catalog().await.map_err(|e| e.to_string())?;
+    if let Some(raw) = cfg.namespace.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let namespaces: Vec<&str> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !namespaces.is_empty() {
+            repos.retain(|r| {
+                namespaces.iter().any(|n| r == *n || r.starts_with(&format!("{n}/")))
+            });
+        }
+    }
     let with_tags = with_tags.unwrap_or(false);
     let mut out: Vec<RegistryRepo> = Vec::new();
     for name in repos {

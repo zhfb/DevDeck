@@ -54,6 +54,7 @@ const emptyForm = () => ({
   password: "",
   insecure: false,
   isDockerHub: false,
+  namespace: "",
 });
 
 /** 去掉 scheme，得到 docker 可用的镜像前缀 */
@@ -111,6 +112,7 @@ export default function RegistryPanel() {
       password: "",
       insecure: r.insecure ?? false,
       isDockerHub: r.isDockerHub ?? false,
+      namespace: r.namespace ?? "",
     });
     setShowPw(false);
     setOpen(true);
@@ -134,6 +136,7 @@ export default function RegistryPanel() {
           credentialRef: null,
           insecure: form.insecure,
           isDockerHub: form.isDockerHub,
+          namespace: form.namespace.trim() || null,
           createdAt: new Date().toISOString(),
         },
         password: form.password || null,
@@ -219,6 +222,11 @@ export default function RegistryPanel() {
           <Badge variant="secondary" className="font-mono text-[11px]">
             {hostOf(selected.url)}
           </Badge>
+          {selected.namespace ? (
+            <Badge variant="secondary" className="text-[11px] text-indigo-600">
+              ns / {selected.namespace}
+            </Badge>
+          ) : null}
           {pingOk ? (
             <Badge variant="outline" className="text-[11px] text-emerald-600">
               <Wifi className="mr-1 h-3 w-3" /> 已连接
@@ -414,6 +422,11 @@ export default function RegistryPanel() {
                         http
                       </Badge>
                     )}
+                    {r.namespace && (
+                      <Badge variant="secondary" className="ml-1 text-[10px] text-indigo-600">
+                        ns / {r.namespace}
+                      </Badge>
+                    )}
                   </TableCell>
                   <TableCell>
                     <span className="mono-caption text-secondary">{hostOf(r.url)}</span>
@@ -505,6 +518,17 @@ export default function RegistryPanel() {
                   </button>
                 </div>
               </div>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="reg-ns">
+                私有命名空间 <span className="text-muted">（可选）</span>
+              </Label>
+              <Input
+                id="reg-ns"
+                placeholder="如 variety 或 variety,ceph0618。填了只显示这些命名空间下的镜像，留空显示全部"
+                value={form.namespace}
+                onChange={(e) => setForm({ ...form, namespace: e.target.value })}
+              />
             </div>
             <div className="flex flex-col gap-2 pt-1">
               <div className="flex items-center justify-between">

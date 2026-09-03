@@ -303,6 +303,10 @@ pub struct RegistryConfig {
     /// 是否为 Docker Hub（走 Bearer token 认证流）
     #[serde(default)]
     pub is_docker_hub: bool,
+    /// 可选：只浏览该命名空间（namespace）下的仓库，如 UCloud 的 `variety` / `ceph0618`。
+    /// 留空则显示 _catalog 返回的全部仓库（公开镜像目录可能非常庞大）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
     pub created_at: String,
 }
 
@@ -415,10 +419,12 @@ mod tests {
             credential_ref: None,
             insecure: true,
             is_docker_hub: false,
+            namespace: Some("variety".into()),
             created_at: "2026-09-03T00:00:00Z".into(),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         assert!(!json.contains("credentialRef"), "None 字段应被跳过");
+        assert!(json.contains("variety"), "namespace 应被序列化");
         let back: RegistryConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.url, cfg.url);
         assert!(back.insecure);

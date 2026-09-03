@@ -162,6 +162,8 @@ export interface RegistryConfig {
   credentialRef?: string | null;
   insecure?: boolean;
   isDockerHub?: boolean;
+  /** 可选：只浏览该命名空间下的仓库（如 UCloud 的 variety / ceph0618） */
+  namespace?: string | null;
   createdAt: string;
 }
 

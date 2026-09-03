@@ -120,6 +120,7 @@ impl AppDb {
                 credential_ref TEXT,
                 insecure INTEGER NOT NULL DEFAULT 0,
                 is_docker_hub INTEGER NOT NULL DEFAULT 0,
+                namespace TEXT,
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS settings (
@@ -143,6 +144,19 @@ impl AppDb {
                  ALTER TABLE hosts ADD COLUMN jump_port INTEGER;
                  ALTER TABLE hosts ADD COLUMN jump_user TEXT;",
             )?;
+        }
+
+        // migration: add `namespace` column to an existing registries table
+        let has_ns = self
+            .conn
+            .prepare("PRAGMA table_info(registries)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|c| c == "namespace");
+        if !has_ns {
+            self.conn
+                .execute_batch("ALTER TABLE registries ADD COLUMN namespace TEXT;")?;
         }
         Ok(())
     }
@@ -445,7 +459,7 @@ impl AppDb {
 
     pub fn list_registries(&self) -> Result<Vec<RegistryConfig>, DbError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, url, username, credential_ref, insecure, is_docker_hub, created_at
+            "SELECT id, name, url, username, credential_ref, insecure, is_docker_hub, namespace, created_at
              FROM registries ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -457,7 +471,8 @@ impl AppDb {
                 credential_ref: r.get(4)?,
                 insecure: r.get::<_, i64>(5)? != 0,
                 is_docker_hub: r.get::<_, i64>(6)? != 0,
-                created_at: r.get(7)?,
+                namespace: r.get(7)?,
+                created_at: r.get(8)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -465,7 +480,7 @@ impl AppDb {
 
     pub fn get_registry(&self, id: &str) -> Result<Option<RegistryConfig>, DbError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, url, username, credential_ref, insecure, is_docker_hub, created_at
+            "SELECT id, name, url, username, credential_ref, insecure, is_docker_hub, namespace, created_at
              FROM registries WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], |r| {
@@ -477,7 +492,8 @@ impl AppDb {
                 credential_ref: r.get(4)?,
                 insecure: r.get::<_, i64>(5)? != 0,
                 is_docker_hub: r.get::<_, i64>(6)? != 0,
-                created_at: r.get(7)?,
+                namespace: r.get(7)?,
+                created_at: r.get(8)?,
             })
         })?;
         Ok(rows.next().transpose()?)
@@ -485,12 +501,12 @@ impl AppDb {
 
     pub fn upsert_registry(&self, r: &RegistryConfig) -> Result<(), DbError> {
         self.conn.execute(
-            "INSERT INTO registries (id, name, url, username, credential_ref, insecure, is_docker_hub, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO registries (id, name, url, username, credential_ref, insecure, is_docker_hub, namespace, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                name=excluded.name, url=excluded.url, username=excluded.username,
                credential_ref=excluded.credential_ref, insecure=excluded.insecure,
-               is_docker_hub=excluded.is_docker_hub",
+               is_docker_hub=excluded.is_docker_hub, namespace=excluded.namespace",
             params![
                 r.id,
                 r.name,
@@ -499,6 +515,7 @@ impl AppDb {
                 r.credential_ref,
                 i64::from(r.insecure),
                 i64::from(r.is_docker_hub),
+                r.namespace,
                 r.created_at,
             ],
         )?;
