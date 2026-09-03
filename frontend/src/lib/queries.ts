@@ -14,6 +14,9 @@ import type {
   HostProcess,
   HostStats,
   HostStatsHistoryPoint,
+  IdleLockConfig,
+  RegistryConfig,
+  RegistryRepo,
   Snippet,
   Tunnel,
 } from "@/lib/types";
@@ -259,10 +262,116 @@ export function useHostProcesses(hostId: string | null) {
 }
 
 // ---------------------------------------------------------------------------
+// Registries (镜像仓库：配置 + 浏览仓库/tags)
+// ---------------------------------------------------------------------------
+export function useRegistries() {
+  return useQuery({
+    queryKey: ["registries"],
+    queryFn: () => invoke<RegistryConfig[]>("registries.list"),
+    refetchIntervalInBackground: true,
+  });
+}
+
+export function useRegistryPing(id: string | null) {
+  return useQuery({
+    queryKey: ["registry-ping", id],
+    queryFn: () => invoke<string>("registry.ping", { id: id! }),
+    enabled: !!id,
+    retry: false,
+    staleTime: 60_000,
+  });
+}
+
+export function useRegistryRepos(id: string | null) {
+  return useQuery({
+    queryKey: ["registry-repos", id],
+    queryFn: () => invoke<RegistryRepo[]>("registry.repos", { id: id! }),
+    enabled: !!id,
+    staleTime: 15_000,
+  });
+}
+
+export function useRegistryTags(id: string | null, repo: string | null) {
+  return useQuery({
+    queryKey: ["registry-tags", id, repo],
+    queryFn: () => invoke<string[]>("registry.tags", { id: id!, repo: repo! }),
+    enabled: !!id && !!repo,
+    staleTime: 15_000,
+  });
+}
+
+export function useRegistrySave() {
+  const queryClient = qc();
+  return useMutation({
+    mutationFn: ({ registry, password }: { registry: RegistryConfig; password?: string | null }) =>
+      invoke("registries.save", { registry, password: password ?? null }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["registries"] }),
+  });
+}
+
+export function useRegistryDelete() {
+  const queryClient = qc();
+  return useMutation({
+    mutationFn: (id: string) => invoke("registries.delete", { id }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["registries"] });
+      queryClient.invalidateQueries({ queryKey: ["registry-repos"] });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Idle auto-lock
+// ---------------------------------------------------------------------------
+export function useIdleLockConfig() {
+  return useQuery({
+    queryKey: ["idle-lock-config"],
+    queryFn: () => invoke<IdleLockConfig>("idle_lock_config.get"),
+    refetchIntervalInBackground: true,
+  });
+}
+
+export function useIdleLockConfigSet() {
+  const queryClient = qc();
+  return useMutation({
+    mutationFn: (args: {
+      enabled: boolean;
+      timeoutMinutes?: number;
+      useTouchId?: boolean;
+      pin?: string | null;
+    }) => invoke("idle_lock_config.set", args),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["idle-lock-config"] }),
+  });
+}
+
+export function useIdleLockUnlock() {
+  return useMutation({
+    mutationFn: (pin: string) => invoke<boolean>("idle_lock.unlock", { pin }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// sudo 自动填充（SSH 会话）
+// ---------------------------------------------------------------------------
+export function useSudoConfig() {
+  return useQuery({
+    queryKey: ["sudo-config"],
+    queryFn: () => invoke<boolean>("sudo_config.get"),
+  });
+}
+
+export function useSudoConfigSet() {
+  const queryClient = qc();
+  return useMutation({
+    mutationFn: (enabled: boolean) => invoke("sudo_config.set", { enabled }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["sudo-config"] }),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Snippets (P1)
 // ---------------------------------------------------------------------------
-export function useSnippets() {
-  return useQuery({
+export function useSnippets() {  return useQuery({
     queryKey: ["snippets"],
     queryFn: () => invoke<Snippet[]>("snippets.list"),
   });

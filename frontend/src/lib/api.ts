@@ -22,6 +22,8 @@ import type {
   HostProcess,
   HostStats,
   HostStatsHistoryPoint,
+  IdleLockConfig,
+  RegistryConfig,
   Snippet,
   SshSession,
   Tunnel,
@@ -264,6 +266,19 @@ const mockNetworks: DockerNetwork[] = [
   { id: "nw-app", name: "app-net", engineId: "eng-orb", driver: "bridge", scope: "local", containers: 2 },
 ];
 
+const mockRegistries: RegistryConfig[] = [
+  {
+    id: "reg-ucloud",
+    name: "UCloud 镜像仓库",
+    url: "https://uhub.service.ucloud.cn",
+    username: "demo",
+    credentialRef: null,
+    insecure: false,
+    isDockerHub: false,
+    createdAt: iso(86400_000 * 10),
+  },
+];
+
 const mockProcesses: HostProcess[] = [
   { hostId: "h-ali-hk", pid: 1, ppid: 0, user: "root", cpuPercent: 0.0, memPercent: 0.1, rssKb: 8_192, etime: "21:03:11", command: "/sbin/init" },
   { hostId: "h-ali-hk", pid: 1284, ppid: 1, user: "root", cpuPercent: 23.1, memPercent: 4.2, rssKb: 85_000, etime: "02:11:05", command: "nginx: worker process" },
@@ -392,6 +407,16 @@ export const mockHandlers: Record<string, (a: any) => unknown> = {
     engineId ? mockImages.filter((i) => i.engineId === engineId) : mockImages,
   "volumes.list": async () => mockVolumes,
   "networks.list": async () => mockNetworks,
+  "registries.list": async () => mockRegistries,
+  "registry.repos": async ({ id }: { id: string }) =>
+    mockRegistries
+      .filter((r) => r.id === id)
+      .map((r) => {
+        const host = r.url.replace(/^https?:\/\//, "").split(":")[0];
+        return { name: `${host}/devdeck-demo`, tags: ["latest", "v1.0.0", "v1.1.0"] };
+      }),
+  "registry.tags": async () => ["latest", "v1.0.0", "v1.1.0"],
+  "registry.ping": async () => "v2",
   "host.processes": async ({ hostId }: { hostId: string }) => mockProcesses.filter((p) => p.hostId === hostId),
   "snippets.list": async () => mockSnippets,
   "tunnels.list": async () => mockTunnels,
@@ -635,6 +660,74 @@ const mockEvents = {
 
 // Image pull mock — mirrors the Rust event contract so the task queue remains
 // explorable in browser mode.
+mockHandlers["registries.save"] = async ({ registry, password }: { registry: RegistryConfig; password?: string | null }) => {
+  const existing = mockRegistries.findIndex((r) => r.id === registry.id);
+  if (existing >= 0) {
+    mockRegistries[existing] = { ...registry, credentialRef: password ? "mock-keychain" : registry.credentialRef };
+  } else {
+    mockRegistries.push(registry);
+  }
+  return { ok: true };
+};
+
+mockHandlers["registries.delete"] = async ({ id }: { id: string }) => {
+  const idx = mockRegistries.findIndex((r) => r.id === id);
+  if (idx >= 0) mockRegistries.splice(idx, 1);
+  return { ok: true };
+};
+
+mockHandlers["config.export"] = async () => ({
+  app: "devdeck",
+  schemaVersion: 1,
+  exportedAt: new Date().toISOString(),
+  hostGroups: mockHostGroups,
+  hosts: mockHosts,
+  tunnels: mockTunnels,
+  snippets: mockSnippets,
+  registries: mockRegistries,
+});
+
+mockHandlers["config.import"] = async ({ bundle }: { bundle: { app?: string } }) => {
+  if (bundle?.app !== "devdeck") throw new Error("不是有效的 DevDeck 配置文件");
+  return { groups: 1, hosts: 2, tunnels: 1, snippets: 3, registries: 1 };
+};
+
+let mockIdleLock: IdleLockConfig = {
+  enabled: false,
+  timeoutMinutes: 10,
+  useTouchId: false,
+  hasPin: true,
+};
+
+mockHandlers["idle_lock_config.get"] = async () => mockIdleLock;
+mockHandlers["idle_lock_config.set"] = async ({
+  enabled,
+  timeoutMinutes,
+  useTouchId,
+  pin,
+}: {
+  enabled: boolean;
+  timeoutMinutes?: number;
+  useTouchId?: boolean;
+  pin?: string | null;
+}) => {
+  mockIdleLock = {
+    ...mockIdleLock,
+    enabled,
+    timeoutMinutes: timeoutMinutes ?? mockIdleLock.timeoutMinutes,
+    useTouchId: useTouchId ?? mockIdleLock.useTouchId,
+    hasPin: pin ? true : mockIdleLock.hasPin,
+  };
+  return { ok: true };
+};
+mockHandlers["idle_lock.unlock"] = async ({ pin }: { pin: string }) => pin === "1234";
+
+mockHandlers["sudo_config.get"] = async () => true;
+mockHandlers["sudo_config.set"] = async () => ({});
+
+mockHandlers["local_shell_start"] = async () => `local-mock-${Date.now().toString(36)}`;
+mockHandlers["local_shell_stop"] = async () => ({ ok: true });
+
 mockHandlers["images.pull"] = async ({ image }: { image: string }) => {
   const taskId = `pull-mock-${Date.now().toString(36)}`;
   void (async () => {

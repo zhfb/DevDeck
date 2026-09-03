@@ -284,6 +284,80 @@ pub struct KnownHostRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Registry (镜像仓库配置)
+// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryConfig {
+    pub id: String,
+    pub name: String,
+    /// Base URL，例如 https://registry.example.com 或 http://127.0.0.1:5000
+    pub url: String,
+    pub username: String,
+    /// Keychain 引用（密码只存 Keychain）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<String>,
+    /// 允许 http / 跳过 TLS 校验（本地或内网仓库）
+    #[serde(default)]
+    pub insecure: bool,
+    /// 是否为 Docker Hub（走 Bearer token 认证流）
+    #[serde(default)]
+    pub is_docker_hub: bool,
+    pub created_at: String,
+}
+
+/// 仓库浏览结果：仓库名 + tags
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryRepo {
+    pub name: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Idle auto-lock（闲置自动锁）
+// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdleLockConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_idle_timeout")]
+    pub timeout_minutes: u32,
+    #[serde(default)]
+    pub use_touch_id: bool,
+    /// 是否已设置解锁 PIN（仅读，由后端探测 Keychain）
+    #[serde(default)]
+    pub has_pin: bool,
+}
+
+fn default_idle_timeout() -> u32 {
+    10
+}
+
+// ---------------------------------------------------------------------------
+// Config export / import（配置导入导出，不含密钥本体）
+// ---------------------------------------------------------------------------
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigBundle {
+    pub app: String,
+    pub schema_version: u32,
+    pub exported_at: String,
+    #[serde(default)]
+    pub host_groups: Vec<HostGroup>,
+    #[serde(default)]
+    pub hosts: Vec<Host>,
+    #[serde(default)]
+    pub tunnels: Vec<Tunnel>,
+    #[serde(default)]
+    pub snippets: Vec<Snippet>,
+    #[serde(default)]
+    pub registries: Vec<RegistryConfig>,
+}
+
+// ---------------------------------------------------------------------------
 // App info
 // ---------------------------------------------------------------------------
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

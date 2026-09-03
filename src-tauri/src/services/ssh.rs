@@ -10,6 +10,7 @@
 //! TOFU (G3) and Keychain private keys (G5) remain pending.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -209,6 +210,10 @@ pub struct SshManager {
     remote_forwards: Arc<Mutex<HashMap<String, RemoteForwardTarget>>>,
     /// prompt_id → channel to resolve a pending keyboard-interactive (TOTP) prompt
     pending_auth: Mutex<HashMap<String, oneshot::Sender<Vec<String>>>>,
+    /// sudo 自动填充开关（可关，设置页控制）
+    sudo_autofill: Arc<AtomicBool>,
+    /// session_id → 连接时使用的密码（仅内存，用于 sudo 自动填充）
+    sudo_passwords: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl SshManager {
@@ -222,7 +227,20 @@ impl SshManager {
             pool: Mutex::new(HashMap::new()),
             remote_forwards: Arc::new(Mutex::new(HashMap::new())),
             pending_auth: Mutex::new(HashMap::new()),
+            sudo_autofill: Arc::new(AtomicBool::new(true)),
+            sudo_passwords: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// 设置 sudo 自动填充开关。
+    pub fn set_sudo_autofill(&self, enabled: bool) {
+        self.sudo_autofill
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 是否启用 sudo 自动填充。
+    pub fn sudo_autofill_enabled(&self) -> bool {
+        self.sudo_autofill.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub async fn open_sftp(&self, session_id: &str) -> Result<SftpSession, SshError> {
@@ -702,9 +720,20 @@ impl SshManager {
         let (mut read_half, write_half) = channel.split();
         let (tx, mut rx) = mpsc::unbounded_channel::<PtyCmd>();
 
+        // 缓存密码（仅内存）用于 sudo 自动填充
+        if let Some(pw) = password {
+            self.sudo_passwords
+                .lock()
+                .await
+                .insert(session_id.clone(), pw.to_string());
+        }
+
         let app = self.app.clone();
         let session_for_task = session.clone();
         let session_id_task = session_id.clone();
+        let sudo_passwords = self.sudo_passwords.clone();
+        let sudo_autofill = self.sudo_autofill.clone();
+        let tx_task = tx.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -712,11 +741,27 @@ impl SshManager {
                         match msg {
                             Some(ChannelMsg::Data { data }) => {
                                 let text = String::from_utf8_lossy(&data).to_string();
+                                maybe_autofill_sudo(
+                                    &text,
+                                    &sudo_autofill,
+                                    &sudo_passwords,
+                                    &session_id_task,
+                                    &tx_task,
+                                    &app,
+                                ).await;
                                 let event = format!("term:data:{session_id_task}");
                                 let _ = app.emit(event.as_str(), text);
                             }
                             Some(ChannelMsg::ExtendedData { data, .. }) => {
                                 let text = String::from_utf8_lossy(&data).to_string();
+                                maybe_autofill_sudo(
+                                    &text,
+                                    &sudo_autofill,
+                                    &sudo_passwords,
+                                    &session_id_task,
+                                    &tx_task,
+                                    &app,
+                                ).await;
                                 let event = format!("term:data:{session_id_task}");
                                 let _ = app.emit(event.as_str(), text);
                             }
@@ -1111,4 +1156,38 @@ fn parse_processes(host_id: &str, output: &str) -> Vec<crate::models::HostProces
         });
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// sudo 密码自动填充
+// ---------------------------------------------------------------------------
+
+/// 判断输出是否为 sudo 密码提示。
+/// 保守匹配 `[sudo] password for`，避免误填其他程序自身的密码提示。
+fn looks_like_sudo_prompt(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("[sudo] password for")
+}
+
+/// 若命中 sudo 提示且该会话缓存了连接密码，自动回填 `密码\r`，
+/// 并通过 `term:notice:{sessionId}` 告知前端（可选 UI 提示）。
+async fn maybe_autofill_sudo(
+    text: &str,
+    enabled: &AtomicBool,
+    passwords: &Mutex<HashMap<String, String>>,
+    session_id: &str,
+    tx: &mpsc::UnboundedSender<PtyCmd>,
+    app: &AppHandle,
+) {
+    if !enabled.load(Ordering::Relaxed) {
+        return;
+    }
+    if !looks_like_sudo_prompt(text) {
+        return;
+    }
+    let pw = passwords.lock().await.get(session_id).cloned();
+    if let Some(pw) = pw {
+        let _ = tx.send(PtyCmd::Data(format!("{pw}\r").into_bytes()));
+        let _ = app.emit(&format!("term:notice:{session_id}"), "已自动填充 sudo 密码");
+    }
 }

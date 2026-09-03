@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { NavRail, type NavPanelId } from "./app/NavRail";
 import { ResourceTree } from "./app/ResourceTree";
@@ -11,6 +11,8 @@ import { ConnectionDialog } from "./components/ConnectionDialog";
 import { HostKeyDialog } from "./components/HostKeyDialog";
 import { useWorkspace } from "./stores/workspace";
 import { PowerController } from "./stores/power";
+import { useIdleLock } from "./stores/idleLock";
+import LockScreen from "./features/lock/LockScreen";
 
 const PANEL_IDS = [
   "dashboard",
@@ -36,6 +38,11 @@ export default function App() {
   const { t } = useTranslation();
   const [currentPanel, setCurrentPanel] = useState<NavPanelId>("dashboard");
   const openTab = useWorkspace((s) => s.openTab);
+  const initIdleLock = useIdleLock((s) => s.init);
+
+  useEffect(() => {
+    void initIdleLock();
+  }, [initIdleLock]);
 
   const handleNavigate = (panel: string) => {
     const p = panel as NavPanelId;
@@ -61,6 +68,7 @@ export default function App() {
         <ConnectionDialog />
         <HostKeyDialog />
         <TrayEvents />
+        <LockScreen />
       </div>
     </ErrorBoundary>
   );

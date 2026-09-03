@@ -7,6 +7,7 @@ import type { DockerEventItem, Host } from "@/lib/types";
 import { usePalette, useConnect } from "@/stores/live";
 import { useWorkspace } from "@/stores/workspace";
 import { cn, timeAgo } from "@/lib/utils";
+import { toast } from "@/components/ui/sonner";
 import { EmptyState, EngineBadge, EnvTag } from "@/components/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -64,6 +65,22 @@ export default function DashboardPage({ onOpenPanel }: PanelProps) {
       run: () => setBottomPanel({ open: true, tab: "events" }),
     });
   }, [registerAction, setBottomPanel]);
+
+  // 命令面板：打开本地终端
+  const openLocalTerminal = useWorkspace((s) => s.openLocalTerminal);
+  useEffect(() => {
+    return registerAction({
+      id: "dashboard.local-terminal",
+      title: "打开本地终端",
+      keywords: "local terminal shell zsh macOS 本地",
+      group: "总览",
+      run: () => {
+        void openLocalTerminal().catch((e) =>
+          toast.error("打开本地终端失败", { description: String(e) })
+        );
+      },
+    });
+  }, [registerAction, openLocalTerminal]);
 
   const reachableEngines = (engines ?? []).filter((e) => e.reachable).length;
   const runningContainers = (containers ?? []).filter((c) => c.state === "running").length;

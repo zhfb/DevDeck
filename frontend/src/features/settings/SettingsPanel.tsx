@@ -1,12 +1,13 @@
-import { useState, useEffect } from "react";
-import { Box, Database, Download, Play, RefreshCw, Settings, Shield, SlidersHorizontal, Square, Trash2 } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Box, Copy, Database, Download, Play, RefreshCw, Settings, Shield, SlidersHorizontal, Square, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import i18n, { setLanguage, SUPPORTED_LANGUAGES } from "@/lib/i18n";
 import { invoke } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { LucideIcon } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
-import { useEngines } from "@/lib/queries";
+import { useEngines, useIdleLockConfig, useIdleLockConfigSet, useSudoConfig, useSudoConfigSet } from "@/lib/queries";
+import { useQueryClient } from "@tanstack/react-query";
 import { useUi } from "@/stores/workspace";
 import { EngineBadge } from "@/components/shared";
 import { Button } from "@/components/ui/button";
@@ -80,6 +81,9 @@ function SettingRow({
   );
 }
 
+/** MCP Server 本地引擎 socket 路径（提示用） */
+const mcpSocketPath = "~/.lima/devdeck/sock/docker.sock";
+
 /**
  * 设置页 — 通用 / 容器引擎 / 安全 / 高级 / 危险区。
  * 规格：docs/管理面板规划.md §7
@@ -88,6 +92,7 @@ export default function SettingsPanel(_props: PanelProps) {
   const { t } = useTranslation();
   const { theme, setTheme } = useUi();
   const { data: engines } = useEngines();
+  const queryClient = useQueryClient();
 
   // 内置 Docker 引擎
   const [emb, setEmb] = useState<EmbeddedStatus | null>(null);
@@ -186,10 +191,94 @@ export default function SettingsPanel(_props: PanelProps) {
   // 占位开关状态
   const [openDashboardOnLaunch, setOpenDashboardOnLaunch] = useState(false);
   const [tofuVerify, setTofuVerify] = useState(true);
-  const [idleLock, setIdleLock] = useState(false);
   const [dangerConfirm, setDangerConfirm] = useState(true);
   const [eventForward, setEventForward] = useState(false);
   const [throttleState, setThrottleState] = useState(true);
+
+  // ---- 配置导入 / 导出（不含密钥本体）----
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+
+  // ---- 闲置自动锁 ----
+  const { data: idleCfg } = useIdleLockConfig();
+  const idleLockSave = useIdleLockConfigSet();
+  const [idlePin, setIdlePin] = useState("");
+
+  // ---- SSH sudo 自动填充 ----
+  const { data: sudoCfg } = useSudoConfig();
+  const sudoSave = useSudoConfigSet();
+
+  const saveIdleLock = (patch: {
+    enabled?: boolean;
+    timeoutMinutes?: number;
+    useTouchId?: boolean;
+    pin?: string | null;
+  }) => {
+    idleLockSave.mutate(
+      {
+        enabled: patch.enabled ?? idleCfg?.enabled ?? false,
+        timeoutMinutes: patch.timeoutMinutes ?? idleCfg?.timeoutMinutes ?? 10,
+        useTouchId: patch.useTouchId ?? idleCfg?.useTouchId ?? false,
+        pin: patch.pin,
+      },
+      {
+        onSuccess: () => {
+          if (patch.pin) toast.success("解锁 PIN 已更新");
+          setIdlePin("");
+        },
+        onError: (e) => toast.error("保存失败", { description: String(e) }),
+      }
+    );
+  };
+
+  const doExport = async () => {
+    try {
+      const bundle = await invoke<Record<string, unknown>>("config.export");
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `devdeck-config-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success("配置已导出（不含密钥）", {
+        description: "导入到新机器后需重新填写各凭据",
+      });
+    } catch (e) {
+      toast.error("导出失败", { description: String(e) });
+    }
+  };
+
+  const doImport = async (file: File) => {
+    try {
+      const text = await file.text();
+      const bundle = JSON.parse(text);
+      setImporting(true);
+      await invoke("config.import", { bundle });
+      toast.success("配置导入成功", {
+        description: "主机 / 分组 / 隧道 / 片段 / 镜像仓库已恢复",
+      });
+      // 刷新受影响的数据
+      for (const key of [
+        "host-groups",
+        "hosts",
+        "tunnels",
+        "snippets",
+        "registries",
+      ]) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
+    } catch (e) {
+      toast.error("导入失败", { description: String(e) });
+    } finally {
+      setImporting(false);
+    }
+  };
 
   return (
     <div className="h-full overflow-y-auto">
@@ -366,11 +455,69 @@ export default function SettingsPanel(_props: PanelProps) {
           <SettingRow title="known_hosts TOFU 校验" description="首次连接校验主机指纹，防止中间人攻击">
             <Switch checked={tofuVerify} onCheckedChange={setTofuVerify} />
           </SettingRow>
-          <SettingRow title="闲置自动锁定" description="长时间无操作自动锁定界面（V1.1）">
-            <Switch checked={idleLock} onCheckedChange={setIdleLock} />
+          <SettingRow title="闲置自动锁定" description="无操作 N 分钟自动锁定界面，需 PIN 解锁">
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] text-secondary">{idleCfg?.timeoutMinutes ?? 10} 分钟</span>
+              <Switch
+                checked={idleCfg?.enabled ?? false}
+                onCheckedChange={(v) => saveIdleLock({ enabled: !!v })}
+              />
+            </div>
           </SettingRow>
+          {(idleCfg?.enabled ?? false) && (
+            <>
+              <SettingRow title="锁定等待时间" description="无操作多久后自动锁定">
+                <Select
+                  value={String(idleCfg?.timeoutMinutes ?? 10)}
+                  onValueChange={(v) => saveIdleLock({ timeoutMinutes: Number(v) })}
+                >
+                  <SelectTrigger className="w-28">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[1, 5, 10, 15, 30, 60].map((m) => (
+                      <SelectItem key={m} value={String(m)}>
+                        {m} 分钟
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </SettingRow>
+              <SettingRow
+                title="解锁 PIN"
+                description={idleCfg?.hasPin ? "已设置 PIN，输入新 PIN 可修改" : "未设置 PIN（锁定后无法解锁）"}
+              >
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="password"
+                    placeholder="6-16 位 PIN"
+                    value={idlePin}
+                    onChange={(e) => setIdlePin(e.target.value)}
+                    className="w-36"
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={idlePin.length < 4}
+                    onClick={() => saveIdleLock({ pin: idlePin })}
+                  >
+                    保存
+                  </Button>
+                </div>
+              </SettingRow>
+            </>
+          )}
           <SettingRow title="危险操作二次确认" description="删除 / 清空等操作需二次确认">
             <Switch checked={dangerConfirm} onCheckedChange={setDangerConfirm} />
+          </SettingRow>
+          <SettingRow
+            title="SSH sudo 密码自动填充"
+            description="SSH 会话出现 sudo 密码提示时，自动填入连接时使用的密码（可关闭）"
+          >
+            <Switch
+              checked={sudoCfg ?? true}
+              onCheckedChange={(v) => sudoSave.mutate(!!v, { onError: (e) => toast.error("保存失败", { description: String(e) }) })}
+            />
           </SettingRow>
         </SettingSection>
 
@@ -384,6 +531,30 @@ export default function SettingsPanel(_props: PanelProps) {
           </SettingRow>
           <SettingRow title="降载状态机" description="后台 Tab 零渲染 / 降采样">
             <Switch checked={throttleState} onCheckedChange={setThrottleState} />
+          </SettingRow>
+          <SettingRow
+            title="MCP Server（AI 接入）"
+            description="让 Claude Code / Cursor 等通过 MCP 连接本地 Docker 引擎"
+          >
+            <div className="flex flex-col items-end gap-2">
+              <code className="mono-caption rounded bg-active-fill px-2 py-1 text-[11.5px] text-secondary">
+                {mcpSocketPath}
+              </code>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  navigator.clipboard
+                    .writeText(
+                      `claude mcp add devdeck -- bash -lc 'DEVDeck_DOCKER_SOCKET=${mcpSocketPath} <devdeck-mcp可执行路径>'`
+                    )
+                    .then(() => toast.success("Claude Code 配置已复制"));
+                }}
+              >
+                <Copy />
+                复制 Claude Code 配置
+              </Button>
+            </div>
           </SettingRow>
           <SettingRow
             title="自动更新"
@@ -410,9 +581,25 @@ export default function SettingsPanel(_props: PanelProps) {
             <p className="text-[12px] text-muted">以下操作影响本地数据，请谨慎执行</p>
           </div>
           <div className="flex flex-col px-4 pb-4 pt-2">
-            <SettingRow title="导出配置 JSON" description="导出全部配置，不含密钥">
-              <Button variant="secondary" size="sm" onClick={() => toast.success("配置已导出（不含密钥）")}>
+            <SettingRow title="导出配置 JSON" description="导出全部配置，不含密钥（凭据仅保留引用）">
+              <Button variant="secondary" size="sm" onClick={doExport}>
                 <Download /> 导出
+              </Button>
+            </SettingRow>
+            <SettingRow title="导入配置 JSON" description="恢复主机 / 分组 / 隧道 / 片段 / 镜像仓库">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void doImport(f);
+                  e.target.value = "";
+                }}
+              />
+              <Button variant="secondary" size="sm" disabled={importing} onClick={() => fileInputRef.current?.click()}>
+                {importing ? "导入中…" : "导入"}
               </Button>
             </SettingRow>
             <SettingRow title="清空本地数据" description="删除缓存与本地状态，不可恢复">

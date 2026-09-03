@@ -1,10 +1,11 @@
-import { useState } from "react";
-import { Database, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { useState, useMemo } from "react";
+import { Boxes, Database, Eye, Plus, RefreshCw, Trash2 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
-import { useVolumes, useVolumeAction } from "@/lib/queries";
+import { useVolumes, useVolumeAction, useContainers } from "@/lib/queries";
 import { formatBytes } from "@/lib/utils";
 import type { DockerVolume } from "@/lib/types";
 import { EmptyState } from "@/components/shared";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -40,12 +41,32 @@ import {
 /** Docker volumes panel (P1: 卷管理创建/删除) — 功能清单 P1「卷管理完整」 */
 export default function VolumesPanel(_props: PanelProps) {
   const { data: volumes, isLoading, isFetching, refetch } = useVolumes();
+  const { data: containers } = useContainers();
   const volumeAction = useVolumeAction();
 
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [newDriver, setNewDriver] = useState("local");
   const [confirmDelete, setConfirmDelete] = useState<DockerVolume | null>(null);
+  const [detail, setDetail] = useState<DockerVolume | null>(null);
+
+  // 反查：哪些容器挂载了该卷（mounts.type === "volume" 且 source === 卷名）
+  const volumeUsers = useMemo(() => {
+    if (!detail || !containers) return [];
+    return containers
+      .filter((c) =>
+        (c.mounts ?? []).some(
+          (m) => m.type === "volume" && m.source === detail.name
+        )
+      )
+      .map((c) => ({
+        name: c.name,
+        state: c.state,
+        mountPoint: (c.mounts ?? []).find(
+          (m) => m.type === "volume" && m.source === detail.name
+        )?.destination,
+      }));
+  }, [detail, containers]);
 
   const runDelete = (v: DockerVolume) => {
     volumeAction.mutate(
@@ -144,6 +165,15 @@ export default function VolumesPanel(_props: PanelProps) {
                       <Button
                         variant="ghost"
                         size="icon-sm"
+                        title="详情"
+                        className="text-muted hover:bg-active-fill hover:text-foreground"
+                        onClick={() => setDetail(v)}
+                      >
+                        <Eye />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
                         title="删除"
                         className="text-muted hover:bg-danger-tint hover:text-danger"
                         onClick={() => setConfirmDelete(v)}
@@ -158,6 +188,75 @@ export default function VolumesPanel(_props: PanelProps) {
           </Table>
         )}
       </div>
+
+      {/* 卷详情：被哪些容器挂载 */}
+      <Dialog open={detail !== null} onOpenChange={(o) => !o && setDetail(null)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Database className="h-4 w-4 text-accent" />
+              {detail?.name}
+            </DialogTitle>
+            <DialogDescription>卷详情与挂载关系</DialogDescription>
+          </DialogHeader>
+          {detail && (
+            <div className="flex flex-col gap-4">
+              <div className="grid grid-cols-2 gap-3 rounded-lg border border-border-subtle bg-surface p-3 text-[12.5px]">
+                <div className="flex flex-col gap-1">
+                  <span className="text-muted">驱动</span>
+                  <span className="font-medium text-foreground">{detail.driver || "—"}</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-muted">范围</span>
+                  <span className="font-medium text-foreground">{detail.scope || "—"}</span>
+                </div>
+                <div className="col-span-2 flex flex-col gap-1">
+                  <span className="text-muted">挂载点</span>
+                  <span className="mono break-all text-[12px] text-foreground">
+                    {detail.mountpoint || "—"}
+                  </span>
+                </div>
+                {detail.created && (
+                  <div className="col-span-2 flex flex-col gap-1">
+                    <span className="text-muted">创建时间</span>
+                    <span className="font-medium text-foreground">{detail.created}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-2 text-[12.5px] font-medium text-foreground">
+                  <Boxes className="h-3.5 w-3.5 text-accent" />
+                  被以下容器挂载
+                  <Badge variant="secondary" className="ml-auto">
+                    {volumeUsers.length}
+                  </Badge>
+                </div>
+                {volumeUsers.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-[12.5px] text-muted">
+                    暂无容器挂载此卷
+                  </div>
+                ) : (
+                  <div className="flex flex-col divide-y divide-border-subtle rounded-lg border border-border">
+                    {volumeUsers.map((u) => (
+                      <div key={u.name} className="flex items-center gap-2 px-3 py-2 text-[12.5px]">
+                        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${u.state === "running" ? "bg-[#34c759]" : "bg-muted"}`} />
+                        <span className="mono truncate font-medium text-foreground">{u.name}</span>
+                        <Badge variant="outline" className="ml-auto shrink-0 text-[10.5px]">
+                          {u.state}
+                        </Badge>
+                        <span className="mono-caption max-w-40 truncate text-muted" title={u.mountPoint}>
+                          {u.mountPoint || ""}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={confirmDelete !== null} onOpenChange={(o) => !o && setConfirmDelete(null)}>
         <AlertDialogContent>

@@ -5,10 +5,16 @@ description = "DevDeck — macOS native SSH/SFTP/Docker workbench"
 authors = ["zhfb"]
 edition = "2021"
 rust-version = "1.77"
+default-run = "devdeck"
 
 [lib]
 name = "devdeck_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "devdeck-mcp"
+path = "src/bin/mcp.rs"
+
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -35,6 +41,9 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 futures-util = "0.3"
 libc = "0.2"
+reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls", "http2"] }
+base64 = "0.22"
+portable-pty = "0.9.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

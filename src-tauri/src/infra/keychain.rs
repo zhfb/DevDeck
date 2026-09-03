@@ -54,6 +54,16 @@ pub fn private_key_account(user: &str, host: &str, port: u16) -> String {
     format!("{}:private-key", account_for(user, host, port))
 }
 
+/// Keychain account ref for a mirror registry: `devdeck:registry:{id}`
+pub fn registry_account(id: &str) -> String {
+    format!("devdeck:registry:{id}")
+}
+
+/// Keychain account for the idle-lock PIN
+pub fn idle_lock_pin_account() -> String {
+    "devdeck:idle-lock-pin".to_string()
+}
+
 pub fn store_private_key(account: &str, private_key_pem: &str) -> Result<(), KeychainError> {
     store_password(&private_key_account_ref(account), private_key_pem)
 }

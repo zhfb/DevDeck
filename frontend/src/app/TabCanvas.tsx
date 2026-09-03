@@ -238,11 +238,12 @@ function LazyPanel({ panel, onOpenPanel }: { panel: string; onOpenPanel: (p: str
 }
 
 function WelcomeScreen({ onOpenPanel }: { onOpenPanel: (p: string) => void }) {
+  const openLocalTerminal = useWorkspace((s) => s.openLocalTerminal);
   const quick = [
     { id: "hosts", label: "SSH 主机", desc: "管理连接与分组", icon: "🖥" },
     { id: "containers", label: "容器", desc: "本地 + 远程 Docker", icon: "📦" },
     { id: "tunnels", label: "隧道", desc: "端口转发", icon: "🔀" },
-    { id: "monitor", label: "监控", desc: "无 Agent 指标", icon: "📈" },
+    { id: "local-terminal", label: "本地终端", desc: "macOS shell", icon: "⌘" },
   ];
   return (
     <div className="grid h-full w-full place-items-center bg-background">
@@ -261,7 +262,13 @@ function WelcomeScreen({ onOpenPanel }: { onOpenPanel: (p: string) => void }) {
         {quick.map((q) => (
           <button
             key={q.id}
-            onClick={() => onOpenPanel(q.id)}
+            onClick={() =>
+              q.id === "local-terminal"
+                ? void openLocalTerminal().catch((e) =>
+                    toast.error("打开本地终端失败", { description: String(e) })
+                  )
+                : onOpenPanel(q.id)
+            }
             className="flex w-52 items-center gap-3 rounded-lg border border-border bg-surface p-3 text-left transition-colors hover:border-accent/40 hover:bg-active-fill"
           >
             <span className="text-[16px]">{q.icon}</span>

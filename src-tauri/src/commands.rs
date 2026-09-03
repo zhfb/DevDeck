@@ -13,6 +13,7 @@ use crate::services::{
     auto_forward::AutoForwardManager, compose::{ComposeManager, ComposeService},
     remote_docker::{RemoteDockerManager, RemoteDockerMount},
     zmodem::ZmodemManager,
+    local_pty::LocalPtyManager,
 };
 
 pub struct AppState {
@@ -35,6 +36,8 @@ pub struct AppState {
     pub zmodem: Arc<ZmodemManager>,
     /// 内置 Docker 引擎（DevDeck 自管 Lima vz + dockerd，不依赖 OrbStack）
     pub embedded: crate::services::embedded::EmbeddedEngine,
+    /// 本地终端（macOS 本地 shell PTY）
+    pub local: LocalPtyManager,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -531,6 +534,283 @@ pub async fn images_remove(state: State<'_, AppState>, engine_id: String, id: St
 }
 
 // ---------------------------------------------------------------------------
+// registries (镜像仓库配置 + Docker Registry API v2 浏览)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn registries_list(state: State<'_, AppState>) -> CmdResult<Vec<RegistryConfig>> {
+    let db = state.db.lock().await;
+    db.list_registries().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn registries_save(
+    state: State<'_, AppState>,
+    mut registry: RegistryConfig,
+    password: Option<String>,
+) -> CmdResult<()> {
+    // 密码写入 Keychain，DB 只保留引用
+    if let Some(pw) = password.filter(|p| !p.is_empty()) {
+        let account = crate::infra::keychain::registry_account(&registry.id);
+        crate::infra::keychain::store_password(&account, &pw).map_err(|e| e.to_string())?;
+        registry.credential_ref = Some(account);
+    }
+    let db = state.db.lock().await;
+    db.upsert_registry(&registry).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn registries_delete(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    // 清理 Keychain 中的密码（若有）
+    let account = crate::infra::keychain::registry_account(&id);
+    let _ = crate::infra::keychain::delete_password(&account);
+    let db = state.db.lock().await;
+    db.delete_registry(&id).map_err(|e| e.to_string())
+}
+
+/// 读取配置并构造 RegistryClient（密码从 Keychain 取出）。
+async fn registry_client(
+    state: &AppState,
+    id: &str,
+) -> Result<(RegistryConfig, crate::services::registry::RegistryClient), String> {
+    let db = state.db.lock().await;
+    let cfg = db
+        .get_registry(id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("未找到镜像仓库配置: {id}"))?;
+    drop(db);
+    let password = cfg
+        .credential_ref
+        .as_deref()
+        .and_then(|a| crate::infra::keychain::load_password(a).ok());
+    let client = crate::services::registry::RegistryClient::new(&cfg, password);
+    Ok((cfg, client))
+}
+
+/// 校验连接与凭据（探测 /v2/）。
+#[tauri::command]
+pub async fn registry_ping(state: State<'_, AppState>, id: String) -> CmdResult<String> {
+    let (_cfg, client) = registry_client(&state, &id).await?;
+    client.ping().await.map_err(|e| e.to_string())
+}
+
+/// 列出仓库（repositories）。可选返回每个仓库的 tag（tags=true 时逐个拉取）。
+#[tauri::command]
+pub async fn registry_repos(
+    state: State<'_, AppState>,
+    id: String,
+    with_tags: Option<bool>,
+) -> CmdResult<Vec<RegistryRepo>> {
+    let (_cfg, client) = registry_client(&state, &id).await?;
+    let repos = client.catalog().await.map_err(|e| e.to_string())?;
+    let with_tags = with_tags.unwrap_or(false);
+    let mut out: Vec<RegistryRepo> = Vec::new();
+    for name in repos {
+        let tags = if with_tags {
+            client.tags(&name).await.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        out.push(RegistryRepo { name, tags });
+    }
+    Ok(out)
+}
+
+/// 列出某个仓库的镜像 tag。
+#[tauri::command]
+pub async fn registry_tags(
+    state: State<'_, AppState>,
+    id: String,
+    repo: String,
+) -> CmdResult<Vec<String>> {
+    let (_cfg, client) = registry_client(&state, &id).await?;
+    client.tags(&repo).await.map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// config import / export（配置导入导出）
+// 导出不含密钥本体：凭据仅保留 Keychain 引用，密码/私钥内容不落盘。
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn config_export(state: State<'_, AppState>) -> CmdResult<ConfigBundle> {
+    let db = state.db.lock().await;
+    Ok(ConfigBundle {
+        app: "devdeck".to_string(),
+        schema_version: 1,
+        exported_at: now_iso(),
+        host_groups: db.list_groups().map_err(|e| e.to_string())?,
+        hosts: db.list_hosts().map_err(|e| e.to_string())?,
+        tunnels: db.list_tunnels().map_err(|e| e.to_string())?,
+        snippets: db.list_snippets().map_err(|e| e.to_string())?,
+        registries: db.list_registries().map_err(|e| e.to_string())?,
+    })
+}
+
+#[tauri::command]
+pub async fn config_import(state: State<'_, AppState>, bundle: ConfigBundle) -> CmdResult<ConfigImportStats> {
+    if bundle.app != "devdeck" {
+        return Err("不是有效的 DevDeck 配置文件".to_string());
+    }
+    let mut stats = ConfigImportStats::default();
+    let db = state.db.lock().await;
+    // 事务：全部成功才生效
+    db.transact(|tx| -> Result<(), crate::infra::db::DbError> {
+        for g in &bundle.host_groups {
+            tx.upsert_group(g)?;
+            stats.groups += 1;
+        }
+        for h in &bundle.hosts {
+            tx.upsert_host(h)?;
+            stats.hosts += 1;
+        }
+        for t in &bundle.tunnels {
+            tx.upsert_tunnel(t)?;
+            stats.tunnels += 1;
+        }
+        for s in &bundle.snippets {
+            tx.upsert_snippet(s)?;
+            stats.snippets += 1;
+        }
+        for r in &bundle.registries {
+            tx.upsert_registry(r)?;
+            stats.registries += 1;
+        }
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(stats)
+}
+
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigImportStats {
+    pub groups: usize,
+    pub hosts: usize,
+    pub tunnels: usize,
+    pub snippets: usize,
+    pub registries: usize,
+}
+
+// ---------------------------------------------------------------------------
+// idle auto-lock（闲置自动锁）
+// PIN 存 Keychain；启用/时长/是否 Touch ID 存 settings KV。
+// ---------------------------------------------------------------------------
+
+const IDLE_LOCK_KEY: &str = "idle_lock";
+
+#[tauri::command]
+pub async fn idle_lock_config_get(state: State<'_, AppState>) -> CmdResult<IdleLockConfig> {
+    let db = state.db.lock().await;
+    let raw = db.get_setting(IDLE_LOCK_KEY).map_err(|e| e.to_string())?;
+    let mut cfg: IdleLockConfig = raw
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(IdleLockConfig {
+            enabled: false,
+            timeout_minutes: 10,
+            use_touch_id: false,
+            has_pin: false,
+        });
+    cfg.has_pin = crate::infra::keychain::load_password(&crate::infra::keychain::idle_lock_pin_account())
+        .is_ok();
+    Ok(cfg)
+}
+
+#[tauri::command]
+pub async fn idle_lock_config_set(
+    state: State<'_, AppState>,
+    enabled: bool,
+    timeout_minutes: Option<u32>,
+    use_touch_id: Option<bool>,
+    pin: Option<String>,
+) -> CmdResult<()> {
+    // PIN：写入 / 覆盖 / 清除（传空字符串表示清除）
+    let account = crate::infra::keychain::idle_lock_pin_account();
+    match pin {
+        Some(p) if !p.is_empty() => {
+            crate::infra::keychain::store_password(&account, &p).map_err(|e| e.to_string())?
+        }
+        Some(_) => {
+            // 传了空串 → 清除 PIN
+            let _ = crate::infra::keychain::delete_password(&account);
+        }
+        None => {}
+    }
+    let db = state.db.lock().await;
+    let existing: IdleLockConfig = db
+        .get_setting(IDLE_LOCK_KEY)
+        .map_err(|e| e.to_string())?
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(IdleLockConfig {
+            enabled: false,
+            timeout_minutes: 10,
+            use_touch_id: false,
+            has_pin: false,
+        });
+    let next = IdleLockConfig {
+        enabled,
+        timeout_minutes: timeout_minutes.unwrap_or(existing.timeout_minutes).clamp(1, 60),
+        use_touch_id: use_touch_id.unwrap_or(existing.use_touch_id),
+        has_pin: existing.has_pin,
+    };
+    let raw = serde_json::to_string(&next).map_err(|e| e.to_string())?;
+    db.set_setting(IDLE_LOCK_KEY, &raw).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 用 PIN 解锁。成功返回 true；失败返回 false（不抛错，便于前端提示）。
+#[tauri::command]
+pub async fn idle_lock_unlock(state: State<'_, AppState>, pin: String) -> CmdResult<bool> {
+    let account = crate::infra::keychain::idle_lock_pin_account();
+    let stored = crate::infra::keychain::load_password(&account);
+    let db = state.db.lock().await;
+    let cfg: IdleLockConfig = db
+        .get_setting(IDLE_LOCK_KEY)
+        .map_err(|e| e.to_string())?
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(IdleLockConfig {
+            enabled: false,
+            timeout_minutes: 10,
+            use_touch_id: false,
+            has_pin: false,
+        });
+    drop(db);
+    if !cfg.enabled {
+        return Ok(true);
+    }
+    match stored {
+        Ok(s) => Ok(s == pin),
+        Err(_) => Ok(false),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// sudo 密码自动填充（SSH 会话，可关）
+// ---------------------------------------------------------------------------
+
+const SUDO_AUTOFILL_KEY: &str = "sudo_autofill";
+
+#[tauri::command]
+pub async fn sudo_config_get(state: State<'_, AppState>) -> CmdResult<bool> {
+    let db = state.db.lock().await;
+    let raw = db.get_setting(SUDO_AUTOFILL_KEY).map_err(|e| e.to_string())?;
+    Ok(raw.as_deref().map(|s| s == "1").unwrap_or(true))
+}
+
+#[tauri::command]
+pub async fn sudo_config_set(state: State<'_, AppState>, enabled: bool) -> CmdResult<()> {
+    let db = state.db.lock().await;
+    db.set_setting(SUDO_AUTOFILL_KEY, if enabled { "1" } else { "0" })
+        .map_err(|e| e.to_string())?;
+    drop(db);
+    state.ssh.set_sudo_autofill(enabled);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // volumes / networks (Phase 2 detail)
 // ---------------------------------------------------------------------------
 #[tauri::command]
@@ -843,7 +1123,10 @@ pub async fn ssh_connect(
 pub async fn term_input(state: State<'_, AppState>, session_id: String, data: String) -> CmdResult<()> {
     match state.ssh.send_data(&session_id, data.as_bytes()).await {
         Ok(()) => Ok(()),
-        Err(_) => state.docker.exec_input(&session_id, data.as_bytes()).await.map_err(|e| e.to_string()),
+        Err(_) => match state.docker.exec_input(&session_id, data.as_bytes()).await {
+            Ok(()) => Ok(()),
+            Err(_) => state.local.input(&session_id, data.as_bytes()).await.map_err(|e| e.to_string()),
+        },
     }
 }
 
@@ -852,8 +1135,31 @@ pub async fn term_input(state: State<'_, AppState>, session_id: String, data: St
 pub async fn term_resize(state: State<'_, AppState>, session_id: String, cols: u32, rows: u32) -> CmdResult<()> {
     match state.ssh.resize(&session_id, cols, rows).await {
         Ok(()) => Ok(()),
-        Err(_) => state.docker.exec_resize(&session_id, cols as u16, rows as u16).await.map_err(|e| e.to_string()),
+        Err(_) => match state.docker.exec_resize(&session_id, cols as u16, rows as u16).await {
+            Ok(()) => Ok(()),
+            Err(_) => state.local.resize(&session_id, cols, rows).await.map_err(|e| e.to_string()),
+        },
     }
+}
+
+/// 打开 macOS 本地 shell（PTY）。返回本地会话 id。
+#[tauri::command]
+pub async fn local_shell_start(
+    state: State<'_, AppState>,
+    cols: Option<u32>,
+    rows: Option<u32>,
+) -> CmdResult<String> {
+    state
+        .local
+        .start(cols.unwrap_or(80), rows.unwrap_or(24))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 关闭本地 shell 会话。
+#[tauri::command]
+pub async fn local_shell_stop(state: State<'_, AppState>, session_id: String) -> CmdResult<()> {
+    state.local.stop(&session_id).await.map_err(|e| e.to_string())
 }
 
 /// Reconnect a dropped PTY session (auto-reconnect after keepalive detects

@@ -154,6 +154,29 @@ export interface DockerNetwork {
   containers?: number;
 }
 
+export interface RegistryConfig {
+  id: string;
+  name: string;
+  url: string;
+  username: string;
+  credentialRef?: string | null;
+  insecure?: boolean;
+  isDockerHub?: boolean;
+  createdAt: string;
+}
+
+export interface RegistryRepo {
+  name: string;
+  tags: string[];
+}
+
+export interface IdleLockConfig {
+  enabled: boolean;
+  timeoutMinutes: number;
+  useTouchId: boolean;
+  hasPin: boolean;
+}
+
 export type TunnelType = "local" | "remote" | "socks5";
 
 export interface Tunnel {

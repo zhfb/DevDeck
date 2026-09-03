@@ -54,6 +54,8 @@ interface WorkspaceState {
   splitActive: (dir: "h" | "v") => Promise<string | null>;
   closePane: (tabId: string, paneId: string) => void;
   setActivePane: (tabId: string, paneId: string) => void;
+  /** 打开 macOS 本地终端（PTY shell） */
+  openLocalTerminal: () => Promise<string>;
 }
 
 let tabSeq = 0;
@@ -66,13 +68,15 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   sidebarCollapsed: false,
 
   openTab(tab) {
-    const existing = get().tabs.find(
-      (t) =>
-        t.kind === tab.kind &&
-        (tab.kind === "dashboard" || t.hostId === tab.hostId) &&
-        (tab.kind !== "container-detail" || t.containerId === tab.containerId) &&
-        (tab.kind !== "host-detail" || t.hostId === tab.hostId)
-    );
+    const existing = get().tabs.find((t) => {
+      if (t.kind !== tab.kind) return false;
+      if (tab.kind === "panel") return t.panel === tab.panel;
+      if (tab.kind === "dashboard") return true;
+      if (tab.kind === "container-detail")
+        return t.hostId === tab.hostId && t.containerId === tab.containerId;
+      if (tab.kind === "host-detail") return t.hostId === tab.hostId;
+      return t.hostId === tab.hostId;
+    });
     if (existing && tab.kind !== "ssh") {
       set({ activeTabId: existing.id });
       return existing.id;
@@ -84,6 +88,11 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   },
 
   closeTab(id) {
+    const target = get().tabs.find((t) => t.id === id);
+    // 关闭本地终端时清理后端 PTY 子进程
+    if (target?.kind === "local" && target.sessionId) {
+      void invoke("local_shell_stop", { sessionId: target.sessionId }).catch(() => {});
+    }
     set((s) => {
       const idx = s.tabs.findIndex((t) => t.id === id);
       const tabs = s.tabs.filter((t) => t.id !== id);
@@ -182,6 +191,17 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
     set((s) => ({
       tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, activePaneId: paneId } : t)),
     }));
+  },
+
+  async openLocalTerminal() {
+    const sessionId = await invoke<string>("local_shell_start", { cols: 100, rows: 30 });
+    return get().openTab({
+      kind: "local",
+      title: "本地终端",
+      subtitle: "macOS",
+      env: "none",
+      sessionId,
+    });
   },
 }));
 

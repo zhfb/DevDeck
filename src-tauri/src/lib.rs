@@ -168,6 +168,7 @@ pub fn run() {
                 remote_docker,
                 zmodem,
                 embedded: crate::services::embedded::EmbeddedEngine::new(),
+                local: crate::services::local_pty::LocalPtyManager::new(app.handle().clone()),
             });
 
             {
@@ -191,6 +192,24 @@ pub fn run() {
                             tracing::warn!("embedded auto-ensure failed: {e}");
                         }
                     }
+                });
+            }
+
+            // 恢复 sudo 自动填充开关（默认开启）
+            {
+                let st = app_handle.state::<crate::commands::AppState>();
+                let db = st.db.clone();
+                let ssh = st.ssh.clone();
+                tauri::async_runtime::spawn(async move {
+                    let enabled = {
+                        let db = db.lock().await;
+                        db.get_setting("sudo_autofill")
+                            .ok()
+                            .flatten()
+                            .map(|s| s == "1")
+                            .unwrap_or(true)
+                    };
+                    ssh.set_sudo_autofill(enabled);
                 });
             }
 
@@ -240,6 +259,21 @@ pub fn run() {
             images_list,
             images_pull,
             images_remove,
+            registries_list,
+            registries_save,
+            registries_delete,
+            registry_ping,
+            registry_repos,
+            registry_tags,
+            config_export,
+            config_import,
+            idle_lock_config_get,
+            idle_lock_config_set,
+            idle_lock_unlock,
+            local_shell_start,
+            local_shell_stop,
+            sudo_config_get,
+            sudo_config_set,
             volumes_list,
             volumes_create,
             volumes_remove,

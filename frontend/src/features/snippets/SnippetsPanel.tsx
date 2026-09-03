@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ClipboardCopy, Plus, Send, TerminalSquare, Trash2 } from "lucide-react";
+import { Braces, ClipboardCopy, Plus, Send, TerminalSquare, Trash2 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
 import { useSnippets, useSnippetSave, useSnippetDelete } from "@/lib/queries";
 import { emitTerminalInsert } from "@/lib/terminalBus";
@@ -30,6 +30,26 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
+/** 提取命令中的 {{变量名}} 占位 */
+function extractVars(cmd: string): string[] {
+  const re = /\{\{\s*([^}]+?)\s*\}\}/g;
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cmd)) !== null) {
+    const name = m[1].trim();
+    if (name && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+/** 用变量表替换命令中的 {{变量名}} */
+function applyVars(cmd: string, values: Record<string, string>): string {
+  return cmd.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, raw: string) => {
+    const name = raw.trim();
+    return values[name] ?? `{{${name}}}`;
+  });
+}
+
 /** 常用命令库（P1: Snippets 快捷命令）— 功能清单 P1「Snippets」 */
 export default function SnippetsPanel(_props: PanelProps) {
   const { data: snippets, isLoading } = useSnippets();
@@ -41,6 +61,10 @@ export default function SnippetsPanel(_props: PanelProps) {
   const [command, setCommand] = useState("");
   const [tags, setTags] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<Snippet | null>(null);
+
+  // 变量替换：pending 表示待执行的动作（发送/复制）
+  const [pending, setPending] = useState<{ snippet: Snippet; mode: "send" | "copy" } | null>(null);
+  const [varValues, setVarValues] = useState<Record<string, string>>({});
 
   const { tabs, activeTabId } = useWorkspace();
   const activeSessionId = useMemo(() => {
@@ -84,23 +108,56 @@ export default function SnippetsPanel(_props: PanelProps) {
     setConfirmDelete(null);
   };
 
-  const sendToTerminal = (s: Snippet) => {
-    if (!activeSessionId) {
-      toast.error("没有活动终端", { description: "请先打开一个 SSH 终端再发送命令" });
-      return;
+  const execute = (snippet: Snippet, mode: "send" | "copy", values: Record<string, string>) => {
+    const final = applyVars(snippet.command, values);
+    if (mode === "send") {
+      if (!activeSessionId) {
+        toast.error("没有活动终端", { description: "请先打开一个 SSH 终端再发送命令" });
+        return;
+      }
+      emitTerminalInsert(activeSessionId, `${final}\r`);
+      toast.success(`已发送到活动终端：${snippet.title}`);
+    } else {
+      void navigator.clipboard.writeText(final).then(
+        () => toast.success("命令已复制到剪贴板"),
+        () => toast.error("复制失败")
+      );
     }
-    emitTerminalInsert(activeSessionId, `${s.command}\r`);
-    toast.success(`已发送到活动终端：${s.title}`);
   };
 
-  const copy = async (s: Snippet) => {
-    try {
-      await navigator.clipboard.writeText(s.command);
-      toast.success("命令已复制到剪贴板");
-    } catch {
-      toast.error("复制失败");
+  /** 发送前处理：有占位则弹填值框，否则直接发送 */
+  const sendToTerminal = (s: Snippet) => {
+    const vars = extractVars(s.command);
+    if (vars.length > 0) {
+      setPending({ snippet: s, mode: "send" });
+      setVarValues(Object.fromEntries(vars.map((v) => [v, ""])));
+    } else {
+      execute(s, "send", {});
     }
   };
+
+  const copy = (s: Snippet) => {
+    const vars = extractVars(s.command);
+    if (vars.length > 0) {
+      setPending({ snippet: s, mode: "copy" });
+      setVarValues(Object.fromEntries(vars.map((v) => [v, ""])));
+    } else {
+      execute(s, "copy", {});
+    }
+  };
+
+  const confirmVars = () => {
+    if (!pending) return;
+    const missing = extractVars(pending.snippet.command).filter((v) => !(varValues[v] ?? "").trim());
+    if (missing.length > 0) {
+      toast.error(`请填写：${missing.join("、")}`);
+      return;
+    }
+    execute(pending.snippet, pending.mode, varValues);
+    setPending(null);
+  };
+
+  const pendingVars = pending ? extractVars(pending.snippet.command) : [];
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-background">
@@ -144,6 +201,11 @@ export default function SnippetsPanel(_props: PanelProps) {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="text-[13px] font-medium text-foreground">{s.title}</span>
+                    {extractVars(s.command).length > 0 && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-600">
+                        <Braces className="h-3 w-3" /> 含变量
+                      </span>
+                    )}
                     {s.tags &&
                       s.tags
                         .split(/[,，\s]+/)
@@ -230,6 +292,40 @@ export default function SnippetsPanel(_props: PanelProps) {
             </Button>
             <Button variant="primary" size="md" disabled={!title.trim() || !command.trim()} onClick={submitCreate}>
               保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 变量替换：发送 / 复制前填写 {{变量}} */}
+      <Dialog open={pending !== null} onOpenChange={(o) => !o && setPending(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>填写变量</DialogTitle>
+            <DialogDescription>
+              「{pending?.snippet.title}」包含 {pendingVars.length} 个变量，替换后
+              {pending?.mode === "send" ? "发送到终端" : "复制"}。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 py-1">
+            {pendingVars.map((v) => (
+              <div key={v} className="grid gap-1.5">
+                <Label className="mono-caption text-secondary">{v}</Label>
+                <Input
+                  autoFocus
+                  value={varValues[v] ?? ""}
+                  placeholder={`请输入 ${v}`}
+                  onChange={(e) => setVarValues((prev) => ({ ...prev, [v]: e.target.value }))}
+                />
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="secondary" size="md" onClick={() => setPending(null)}>
+              取消
+            </Button>
+            <Button variant="primary" size="md" onClick={confirmVars}>
+              {pending?.mode === "send" ? "发送" : "复制"}
             </Button>
           </DialogFooter>
         </DialogContent>

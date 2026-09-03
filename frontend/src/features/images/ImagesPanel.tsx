@@ -46,10 +46,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import RegistryPanel from "./RegistryPanel";
 
 /** Image management panel — §4.3 of docs/管理面板规划.md */
 export default function ImagesPanel(_props: PanelProps) {
   const { data: engines } = useEngines();
+  const [tab, setTab] = useState<"images" | "registries">("images");
   const [engineFilter, setEngineFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<DockerImage | null>(null);
@@ -139,6 +141,36 @@ export default function ImagesPanel(_props: PanelProps) {
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-background">
+      {/* Tab: 本地镜像 / 镜像仓库 */}
+      <div className="flex items-center gap-1 border-b border-border-subtle px-3 pt-2">
+        <button
+          className={cn(
+            "rounded-t-md px-3 py-1.5 text-[12.5px] font-medium transition-colors",
+            tab === "images"
+              ? "border border-b-0 border-border-subtle bg-background text-foreground"
+              : "text-muted hover:text-foreground"
+          )}
+          onClick={() => setTab("images")}
+        >
+          本地镜像
+        </button>
+        <button
+          className={cn(
+            "rounded-t-md px-3 py-1.5 text-[12.5px] font-medium transition-colors",
+            tab === "registries"
+              ? "border border-b-0 border-border-subtle bg-background text-foreground"
+              : "text-muted hover:text-foreground"
+          )}
+          onClick={() => setTab("registries")}
+        >
+          镜像仓库
+        </button>
+      </div>
+
+      {tab === "registries" ? (
+        <RegistryPanel />
+      ) : (
+      <>
       {/* Toolbar */}
       <div className="flex items-center gap-2 border-b border-border-subtle px-3 py-2">
         <Select value={engineFilter} onValueChange={setEngineFilter}>
@@ -364,6 +396,8 @@ export default function ImagesPanel(_props: PanelProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      </>
+      )}
     </div>
   );
 }

@@ -5,7 +5,7 @@ use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use thiserror::Error;
 
-use crate::models::{Host, HostGroup, KnownHostRecord, Snippet, Tunnel};
+use crate::models::{Host, HostGroup, KnownHostRecord, RegistryConfig, Snippet, Tunnel};
 
 #[derive(Error, Debug)]
 pub enum DbError {
@@ -112,6 +112,20 @@ impl AppDb {
                 tags TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS registries (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                username TEXT NOT NULL DEFAULT '',
+                credential_ref TEXT,
+                insecure INTEGER NOT NULL DEFAULT 0,
+                is_docker_hub INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             "#,
         )?;
 
@@ -176,6 +190,34 @@ impl AppDb {
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn upsert_group(&self, g: &HostGroup) -> Result<(), DbError> {
+        self.conn.execute(
+            "INSERT INTO host_groups (id, name, env, color) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, env=excluded.env, color=excluded.color",
+            params![g.id, g.name, g.env, g.color],
+        )?;
+        Ok(())
+    }
+
+    /// 在一个 SQLite 事务中执行一组写操作，全部成功才提交。
+    pub fn transact<T>(
+        &self,
+        f: impl FnOnce(&AppDb) -> Result<T, DbError>,
+    ) -> Result<T, DbError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let result = f(self);
+        match result {
+            Ok(v) => {
+                tx.commit()?;
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = tx.rollback();
+                Err(e)
+            }
+        }
     }
 
     // ---- hosts ----
@@ -396,6 +438,92 @@ impl AppDb {
 
     pub fn delete_snippet(&self, id: &str) -> Result<(), DbError> {
         self.conn.execute("DELETE FROM snippets WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    // ---- registries (镜像仓库) ----
+
+    pub fn list_registries(&self) -> Result<Vec<RegistryConfig>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, url, username, credential_ref, insecure, is_docker_hub, created_at
+             FROM registries ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(RegistryConfig {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                url: r.get(2)?,
+                username: r.get(3)?,
+                credential_ref: r.get(4)?,
+                insecure: r.get::<_, i64>(5)? != 0,
+                is_docker_hub: r.get::<_, i64>(6)? != 0,
+                created_at: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn get_registry(&self, id: &str) -> Result<Option<RegistryConfig>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, url, username, credential_ref, insecure, is_docker_hub, created_at
+             FROM registries WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map([id], |r| {
+            Ok(RegistryConfig {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                url: r.get(2)?,
+                username: r.get(3)?,
+                credential_ref: r.get(4)?,
+                insecure: r.get::<_, i64>(5)? != 0,
+                is_docker_hub: r.get::<_, i64>(6)? != 0,
+                created_at: r.get(7)?,
+            })
+        })?;
+        Ok(rows.next().transpose()?)
+    }
+
+    pub fn upsert_registry(&self, r: &RegistryConfig) -> Result<(), DbError> {
+        self.conn.execute(
+            "INSERT INTO registries (id, name, url, username, credential_ref, insecure, is_docker_hub, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+               name=excluded.name, url=excluded.url, username=excluded.username,
+               credential_ref=excluded.credential_ref, insecure=excluded.insecure,
+               is_docker_hub=excluded.is_docker_hub",
+            params![
+                r.id,
+                r.name,
+                r.url,
+                r.username,
+                r.credential_ref,
+                i64::from(r.insecure),
+                i64::from(r.is_docker_hub),
+                r.created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_registry(&self, id: &str) -> Result<(), DbError> {
+        self.conn.execute("DELETE FROM registries WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    // ---- settings (KV) ----
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, DbError> {
+        let mut stmt = self.conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
+        let mut rows = stmt.query_map([key], |r| r.get::<_, String>(0))?;
+        Ok(rows.next().transpose()?)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), DbError> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key, value],
+        )?;
         Ok(())
     }
 }

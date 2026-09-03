@@ -29,6 +29,8 @@ CI/发布    GitHub Actions · 公证 (notarytool) · 签名更新源 (minisign 
 - **会话录制**：会话录制为 asciinema `.cast`（TerminalView 导出）
 - **广播终端**：一条输入同时扇出到多个选中会话
 - **ZMODEM 传输**：经 `rz/sz` 的可靠文件收发（`zmodem_upload` / `zmodem_download`）
+- **本地终端**：macOS 本地 PTY shell（portable-pty，随包自带，总览页 / Cmd+K 打开）
+- **sudo 密码提示自动填充**：SSH 会话命中 `[sudo] password for` 提示时自动填入连接密码，可在设置页关闭
 
 **文件传输**
 - SFTP 双栏文件管理、目录操作、传输队列（并发 4–8）、断点续传、递归目录传输、取消与失败重试
@@ -36,6 +38,8 @@ CI/发布    GitHub Actions · 公证 (notarytool) · 签名更新源 (minisign 
 **容器与编排**
 - **内置 Docker 引擎（默认）**：DevDeck 自管一个 Linux 虚拟机（Apple 原生虚拟化 vz + 真 dockerd），socket 透传到 `~/.lima/devdeck/sock/docker.sock`，应用自动拉起/接入，开箱即用无需 OrbStack/Docker Desktop；设置页可启动 / 停止 / 重置；托管 `~/.devdeck/bin/docker` CLI 自动指向该 socket
 - Docker/Podman 引擎探测（OrbStack / Docker Desktop / Colima / Podman / 内置）、容器生命周期与批量操作、一键容器 Exec 终端、镜像拉取进度、运行新容器表单（端口映射）、卷 / 网络创建删除
+- **镜像仓库配置**：软件内配置私有仓库（如 UCloud）并登录（Basic Auth / Bearer Token，密码仅存 Keychain），浏览仓库镜像与 tag、一键复制 `docker pull` 引用
+- **卷挂载查看**：卷详情弹窗反查被哪些容器挂载（复用容器 mounts 字段，展示挂载目标与状态）
 - **远程 Docker over SSH**：SSH 桥接远端 `docker.sock` → 本地 unix socket，以本地客户端身份管理远端引擎
 - **Compose**：经 SSH 执行 `docker compose`（up / down / logs / build / restart / pull），`compose ps` 服务状态表
 - **事件驱动端口转发**：监听 Docker 事件，容器启动时自动按端口映射暴露 localhost 隧道、停止时自动拆除
@@ -48,8 +52,10 @@ CI/发布    GitHub Actions · 公证 (notarytool) · 签名更新源 (minisign 
 - 主机分组与环境色卡、跳板机配置、无 Agent 监控（CPU/Disk/RAM，前端 + 后台采样）、主机进程查看（复用活跃 SSH 会话执行 `ps`）
 
 **效率**
-- Snippets 常用命令库（一键插入活动终端）、Cmd+K 命令面板、任务队列面板、事件流面板
+- Snippets 常用命令库（一键插入活动终端）、**变量替换**（`{{变量}}` 占位自动弹窗填写）、Cmd+K 命令面板、任务队列面板、事件流面板
+- **配置导入导出**：一键导出 JSON（不含密钥，凭据仅保留引用）/ 导入恢复主机、分组、隧道、片段、镜像仓库
 - **i18n 中英双语**（i18next，导航 / 面板标题 / 通用文案，可在设置切换）
+- **MCP Server**：独立 stdio MCP Server（`devdeck-mcp`），让 Claude Code / Cursor 等 AI 直接连接本地 Docker 引擎（列容器/镜像/卷/网络、启停、exec、日志、inspect），设置页提供接入指引与复制配置
 
 **更新与可观测性**
 - **自动更新**：tauri-plugin-updater，设置页“检查更新 / 安装更新”，GitHub Release 签名 feed
@@ -58,9 +64,10 @@ CI/发布    GitHub Actions · 公证 (notarytool) · 签名更新源 (minisign 
 
 **节能与系统**
 - Active / Background / Idle 低功耗状态机 + 后端采样调度、Docker 事件低功耗批处理、SFTP 传输期间 App Nap 豁免、macOS 托盘菜单、Keychain 密钥保险箱、SQLite 持久化
+- **闲置自动锁**：无操作 N 分钟（1–60 可配）全屏锁定，PIN 解锁（PIN 存 Keychain），可关闭
 
 **规划中（后续版本）**
-- 卷挂载查看、Snippets 变量替换、配置导入导出、闲置自动锁、本地终端、sudo 密码提示、MCP Server
+- 镜像从私有仓库直接拉取到本地引擎（当前为复制 `docker pull` 命令）、广播终端多路输入、更多 MCP 工具（SSH 会话 / SFTP）、团队协作（V2 再评估）
 
 **明确不做**：K8s 全套、独立 VM 运行时 / USB 透传 / x86 模拟（内置 Docker 引擎除外）、OrbStack UI 风格、团队协作（V2 再评估）
 
