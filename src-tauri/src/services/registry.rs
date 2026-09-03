@@ -97,21 +97,26 @@ impl RegistryClient {
     }
 
     /// 列出所有仓库（repositories）。Docker Registry v2 的 `_catalog`。
+    ///
+    /// 分页遵循规范：首页不带 `last`，续页用上一页最后一个仓库名做游标
+    /// （`last` 是仓库名字符串，不是整数偏移；传 `last=0` 会被部分仓库如 UCloud 直接 403 DENIED）。
     pub async fn catalog(&self) -> Result<Vec<String>, RegistryError> {
-        // 一次取足够大分页；需要时可按 `Link` 头续取。
+        const PAGE: usize = 1000;
         let mut repos: Vec<String> = Vec::new();
-        let mut n = 0usize;
         loop {
-            let resp = self.authed_get(&format!("/v2/_catalog?n=1000&last={n}")).await?;
+            let url = match repos.last() {
+                Some(last) => format!("/v2/_catalog?n={PAGE}&last={last}"),
+                None => format!("/v2/_catalog?n={PAGE}"),
+            };
+            let resp = self.authed_get(&url).await?;
             let page: CatalogResp = resp.json().await?;
             if page.repositories.is_empty() {
                 break;
             }
             let page_len = page.repositories.len();
-            n += page_len;
             repos.extend(page.repositories);
-            // 简化分页：若本次不足 1000，认为已取完
-            if page_len < 1000 {
+            // 不足一页说明已取完；恰好一页则按 `last` 游标续取
+            if page_len < PAGE {
                 break;
             }
         }

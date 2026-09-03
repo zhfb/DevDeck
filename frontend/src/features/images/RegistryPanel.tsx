@@ -175,7 +175,13 @@ export default function RegistryPanel() {
   };
 
   // ---- 浏览模式：仓库列表 + tags ----
-  const { data: repos, isFetching: reposLoading } = useRegistryRepos(selectedId);
+  const {
+    data: repos,
+    isFetching: reposLoading,
+    isError: reposError,
+    error: reposErr,
+    refetch: refetchRepos,
+  } = useRegistryRepos(selectedId);
   const { data: tags, isFetching: tagsLoading } = useRegistryTags(
     selectedId,
     expandedRepo
@@ -227,7 +233,18 @@ export default function RegistryPanel() {
         </div>
 
         <div className="min-h-0 flex-1 overflow-auto">
-          {reposLoading && repos === undefined ? (
+          {reposError ? (
+            <EmptyState
+              icon={Wifi}
+              title="加载仓库列表失败"
+              description={`${String((reposErr as Error | null)?.message ?? reposErr ?? "")}。请检查凭据与仓库地址，或确认该仓库允许 _catalog 列举。`}
+              action={
+                <Button size="sm" onClick={() => refetchRepos()}>
+                  <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> 重试
+                </Button>
+              }
+            />
+          ) : reposLoading && repos === undefined ? (
             <div className="flex flex-col gap-3 p-4">
               <Skeleton className="h-10 w-full" />
               <Skeleton className="h-10 w-full" />
