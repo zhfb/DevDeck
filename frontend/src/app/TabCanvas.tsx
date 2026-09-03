@@ -60,9 +60,20 @@ export function TabCanvas({
         </div>
       </div>
 
-      {/* Content */}
+      {/* Content — 所有标签常驻挂载，非激活的用 display:none 隐藏而非卸载。
+          否则切换标签时 TerminalView 被卸载（term.dispose()），SSH 缓冲区全丢，
+          切回来时新建的终端是空的、远端 shell 又无新输出 → 纯黑屏。 */}
       <div className="min-h-0 flex-1">
-        <TabContent tab={active} onOpenPanel={onOpenPanel} />
+        {tabs.map((t) => (
+          <div
+            key={t.id}
+            className="h-full"
+            style={{ display: t.id === active?.id ? "block" : "none" }}
+            aria-hidden={t.id !== active?.id}
+          >
+            <TabContent tab={t} onOpenPanel={onOpenPanel} />
+          </div>
+        ))}
       </div>
     </main>
   );

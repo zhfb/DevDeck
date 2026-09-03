@@ -8,6 +8,13 @@ import { useTaskStore } from "@/features/tasks/taskStore";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/shared";
 import { formatBytes } from "@/lib/utils";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 type TransferEvent = {
   taskId: string;
@@ -76,8 +83,26 @@ function EntryList({
 }
 
 export default function SftpPanel(_props: PanelProps) {
+  const tabs = useWorkspace((s) => s.tabs);
   const activeTab = useWorkspace((s) => s.tabs.find((t) => t.id === s.activeTabId));
-  const sessionId = activeTab?.kind === "ssh" ? activeTab.sessionId : undefined;
+  // SFTP 面板是独立 panel 标签，激活时 activeTab 不是 ssh；因此从全部已打开的
+  // SSH 标签/分屏收集会话，供用户选择（默认跟随当前激活的 SSH 标签）。
+  const sshSessions = useMemo(() => {
+    const out: { sessionId: string; label: string }[] = [];
+    for (const t of tabs) {
+      if (t.kind !== "ssh") continue;
+      if (t.sessionId) out.push({ sessionId: t.sessionId, label: t.title });
+      for (const p of t.panes ?? []) {
+        if (p.sessionId) out.push({ sessionId: p.sessionId, label: `${t.title} · ${p.title}` });
+      }
+    }
+    return out;
+  }, [tabs]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | undefined>(undefined);
+  const sessionId =
+    selectedSessionId ??
+    (activeTab?.kind === "ssh" ? activeTab.sessionId : undefined) ??
+    sshSessions[0]?.sessionId;
   const addTask = useTaskStore((s) => s.addTask);
   const updateTask = useTaskStore((s) => s.updateTask);
   const [localPath, setLocalPath] = useState(".");
@@ -168,7 +193,24 @@ export default function SftpPanel(_props: PanelProps) {
       <div className="flex items-center gap-2 border-b border-border-subtle px-3 py-2">
         <FolderTree className="h-4 w-4 text-secondary" />
         <span className="text-[13px] font-medium">SFTP 双栏</span>
-        <span className="text-[11px] text-muted">{activeTab?.title}</span>
+        {sshSessions.length > 0 && (
+          <Select
+            value={selectedSessionId ?? "auto"}
+            onValueChange={(v) => setSelectedSessionId(v === "auto" ? undefined : v)}
+          >
+            <SelectTrigger className="h-6 w-auto max-w-[220px] px-2 text-[11px]">
+              <SelectValue placeholder="选择 SSH 会话" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="auto">自动（跟随激活 SSH）</SelectItem>
+              {sshSessions.map((s) => (
+                <SelectItem key={s.sessionId} value={s.sessionId}>
+                  {s.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <div className="flex-1" />
         <Button variant="ghost" size="sm" onClick={() => void reload()} title="刷新"><RefreshCw /></Button>
       </div>

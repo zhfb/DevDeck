@@ -148,6 +148,8 @@ export function TerminalView({ sessionId, hostId, containerId, engineId, kind = 
       }
       term.open(el);
       termRef.current = term;
+      // term 此后不再被赋 null，捕获为不可空引用供后续闭包使用
+      const liveTerm = term;
 
       // Fit after the layout settles — a freshly split pane's container can
       // still be 0-sized when the component mounts, which makes fit() throw
@@ -170,6 +172,9 @@ export function TerminalView({ sessionId, hostId, containerId, engineId, kind = 
       ro = new ResizeObserver(() => {
         try {
           fit.fit();
+          // display:none 的隐藏标签重新显示时，WebGL/canvas 渲染器可能不重绘，
+          // 强制刷新一帧避免黑屏（配合 TabCanvas 常驻挂载方案）。
+          if (liveTerm.rows > 0) liveTerm.refresh(0, liveTerm.rows - 1);
         } catch {
           /* container hidden — ignore */
         }
