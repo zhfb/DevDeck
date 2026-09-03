@@ -510,18 +510,23 @@ impl DockerManager {
     }
 
     // ---- volumes (P1: 卷创建/删除) ----
+    /// 创建命名卷。`driver_opts` / `labels` 为可选（如 `local` 驱动下
+    /// `type=tmpfs,o=size=1g` 可控制内存盘大小）。
     pub async fn create_volume(
         &self,
         engine_id: &str,
         name: &str,
         driver: Option<&str>,
+        driver_opts: Option<HashMap<String, String>>,
+        labels: Option<HashMap<String, String>>,
     ) -> Result<(), DockerError> {
         let client = self.client(engine_id).await?;
         client
             .create_volume(CreateVolumeOptions {
                 name: name.to_string(),
                 driver: driver.unwrap_or("local").to_string(),
-                ..Default::default()
+                driver_opts: driver_opts.unwrap_or_default(),
+                labels: labels.unwrap_or_default(),
             })
             .await?;
         Ok(())

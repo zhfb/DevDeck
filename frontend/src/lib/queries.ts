@@ -217,8 +217,25 @@ export function useNetworks(engineId?: string) {
 export function useVolumeAction() {
   const queryClient = qc();
   return useMutation({
-    mutationFn: ({ action, name, engineId, driver }: { action: "create" | "remove"; name: string; engineId?: string; driver?: string }) =>
-      invoke(action === "create" ? "volumes_create" : "volumes_remove", { name, engineId, driver }),
+    mutationFn: ({
+      action,
+      name,
+      engineId,
+      driver,
+      driverOpts,
+      labels,
+    }: {
+      action: "create" | "remove";
+      name: string;
+      engineId?: string;
+      driver?: string;
+      driverOpts?: Record<string, string>;
+      labels?: Record<string, string>;
+    }) =>
+      invoke(
+        action === "create" ? "volumes_create" : "volumes_remove",
+        action === "create" ? { name, engineId, driver, driverOpts, labels } : { name, engineId }
+      ),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["volumes"] }),
   });
 }

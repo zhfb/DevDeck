@@ -39,6 +39,10 @@ interface WorkspaceState {
   /** docked bottom panel state */
   bottomPanel: { open: boolean; tab: "logs" | "events" | "tasks"; height: number };
   sidebarCollapsed: boolean;
+  /** 来自卷面板的「用此卷运行容器」预填请求；容器面板消费后清空 */
+  runPrefill: { volumes: { name: string; target?: string }[] } | null;
+  requestRunWithVolumes: (volumes: { name: string; target?: string }[]) => string;
+  clearRunPrefill: () => void;
   openTab: (tab: Omit<WorkspaceTab, "id" | "panes"> & { panes?: WorkspaceTab["panes"] }) => string;
   closeTab: (id: string) => void;
   setActiveTab: (id: string) => void;
@@ -66,6 +70,22 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   activeTabId: null,
   bottomPanel: { open: false, tab: "logs", height: 180 },
   sidebarCollapsed: false,
+  runPrefill: null,
+
+  /** 卷面板「用此卷运行容器」：打开/激活容器面板并带上预填卷 */
+  requestRunWithVolumes(volumes) {
+    set({ runPrefill: { volumes } });
+    return get().openTab({
+      kind: "panel",
+      title: "容器",
+      panel: "containers",
+      env: "none",
+    });
+  },
+
+  clearRunPrefill() {
+    set({ runPrefill: null });
+  },
 
   openTab(tab) {
     const existing = get().tabs.find((t) => {

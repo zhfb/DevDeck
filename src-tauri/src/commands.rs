@@ -932,10 +932,12 @@ pub async fn volumes_create(
     engine_id: String,
     name: String,
     driver: Option<String>,
+    driver_opts: Option<std::collections::HashMap<String, String>>,
+    labels: Option<std::collections::HashMap<String, String>>,
 ) -> CmdResult<()> {
     state
         .docker
-        .create_volume(&engine_id, &name, driver.as_deref())
+        .create_volume(&engine_id, &name, driver.as_deref(), driver_opts, labels)
         .await
         .map_err(|e| e.to_string())
 }

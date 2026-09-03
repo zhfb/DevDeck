@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
-import { useContainerAction, useContainerCreate, useContainers, useEngines, useHosts } from "@/lib/queries";
+import { useContainerAction, useContainerCreate, useContainers, useEngines, useHosts, useVolumes } from "@/lib/queries";
 import { invoke } from "@/lib/api";
 import {
   cn,
@@ -118,6 +118,14 @@ function statusVariant(state: ContainerState): BadgeVariant {
   }
 }
 
+/** 卷挂载行：命名卷（下拉选择）或自定义 bind 路径 */
+type RunVolumeRow =
+  | { kind: "volume"; key: string; name: string; target: string; ro: boolean }
+  | { kind: "bind"; key: string; text: string };
+
+let volKeySeq = 0;
+const nextVolKey = () => `vol-${Date.now().toString(36)}-${++volKeySeq}`;
+
 function formatPorts(ports: PortMapping[]): string {
   return ports
     .map((p) =>
@@ -160,7 +168,7 @@ export default function ContainersPanel(_props: PanelProps) {
   const [runCmd, setRunCmd] = useState("");
   const [runEntrypoint, setRunEntrypoint] = useState("");
   const [runEnv, setRunEnv] = useState<{ key: string; value: string }[]>([]);
-  const [runVolumes, setRunVolumes] = useState<string[]>([]);
+  const [runVolumes, setRunVolumes] = useState<RunVolumeRow[]>([]);
   const [runNetwork, setRunNetwork] = useState("");
   const [runRestart, setRunRestart] = useState("no");
   const [runMemoryMb, setRunMemoryMb] = useState("");
@@ -180,11 +188,37 @@ export default function ContainersPanel(_props: PanelProps) {
     setRunCpus("");
   };
 
+  // ---- 卷面板「用此卷运行容器」预填：打开运行表单并带上命名卷 ----
+  const runPrefill = useWorkspace((s) => s.runPrefill);
+  const clearRunPrefill = useWorkspace((s) => s.clearRunPrefill);
+  useEffect(() => {
+    if (runPrefill) {
+      setRunVolumes(
+        runPrefill.volumes.map((v) => ({
+          kind: "volume",
+          key: nextVolKey(),
+          name: v.name,
+          target: v.target ?? "/data",
+          ro: false,
+        }))
+      );
+      setRunOpen(true);
+      clearRunPrefill();
+    }
+  }, [runPrefill, clearRunPrefill]);
+
+  const updateRunVolume = (i: number, row: RunVolumeRow) =>
+    setRunVolumes((rows) => rows.map((r, j) => (j === i ? row : r)));
+  const removeRunVolume = (i: number) =>
+    setRunVolumes((rows) => rows.filter((_, j) => j !== i));
+
   // 事件驱动端口转发（P2）：容器 start/restart 时自动建隧道，停止时拆除
   const { data: hosts } = useHosts();
   const [autoForwardOn, setAutoForwardOn] = useState(false);
   const [autoForwardBusy, setAutoForwardBusy] = useState(false);
   const activeEngineId = engineFilter !== "all" ? engineFilter : engines?.[0]?.id;
+  // 运行表单的命名卷下拉数据源（当前目标引擎的已建卷）
+  const { data: engineVolumes } = useVolumes(activeEngineId);
 
   useEffect(() => {
     if (!activeEngineId) return;
@@ -336,6 +370,31 @@ export default function ContainersPanel(_props: PanelProps) {
       return;
     }
 
+    // 卷挂载校验：命名卷必须有名称与合法的容器目标路径；自定义路径需含 ":"
+    for (const row of runVolumes) {
+      if (row.kind === "volume") {
+        if (!row.name) {
+          toast.error("卷挂载不完整", { description: "请选择要挂载的命名卷" });
+          return;
+        }
+        if (!row.target.trim().startsWith("/")) {
+          toast.error("卷挂载目标路径无效", { description: "容器内路径需以 / 开头，例如 /data" });
+          return;
+        }
+      } else if (row.kind === "bind" && row.text.trim() && !row.text.includes(":")) {
+        toast.error("卷挂载格式无效", { description: "自定义挂载需为 宿主机路径:容器路径[:ro]，例如 /tmp/a:/app" });
+        return;
+      }
+    }
+    const volumes = runVolumes
+      .map((row) => {
+        if (row.kind === "volume") {
+          return `${row.name}:${row.target.trim()}${row.ro ? ":ro" : ""}`;
+        }
+        return row.text.trim() || null;
+      })
+      .filter((v): v is string => !!v);
+
     containerCreate.mutate(
       {
         engineId,
@@ -347,7 +406,7 @@ export default function ContainersPanel(_props: PanelProps) {
           .map((e) => (e.key.trim() ? `${e.key.trim()}=${e.value.trim()}` : null))
           .filter((e): e is string => e !== null),
         ports: runPorts.trim() || undefined,
-        volumes: runVolumes.map((v) => v.trim()).filter((v) => v.length > 0),
+        volumes: volumes.length ? volumes : undefined,
         network: runNetwork.trim() || undefined,
         restart: runRestart,
         memoryMb,
@@ -749,21 +808,86 @@ export default function ContainersPanel(_props: PanelProps) {
             <div className="grid gap-1.5">
               <Label>卷挂载</Label>
               <div className="grid gap-1.5">
-                {runVolumes.map((v, i) => (
-                  <div key={i} className="flex items-center gap-1.5">
-                    <Input
-                      placeholder="宿主机目录:容器目录[:ro]"
-                      value={v}
-                      onChange={(e) => setRunVolumes(runVolumes.map((r, j) => (j === i ? e.target.value : r)))}
-                    />
-                    <Button variant="ghost" size="icon-sm" onClick={() => setRunVolumes(runVolumes.filter((_, j) => j !== i))}>
+                {runVolumes.map((row, i) => (
+                  <div key={row.key} className="flex items-center gap-1.5">
+                    {row.kind === "volume" ? (
+                      <>
+                        <Select
+                          value={row.name}
+                          onValueChange={(v) => updateRunVolume(i, { ...row, name: v })}
+                        >
+                          <SelectTrigger className="w-44">
+                            <SelectValue placeholder="选择命名卷" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(engineVolumes ?? []).length === 0 ? (
+                              <div className="px-2 py-1.5 text-[12px] text-muted">
+                                当前引擎没有命名卷，可到「卷」面板新建
+                              </div>
+                            ) : (
+                              (engineVolumes ?? []).map((vol) => (
+                                <SelectItem key={vol.name} value={vol.name}>
+                                  {vol.name}
+                                </SelectItem>
+                              ))
+                            )}
+                          </SelectContent>
+                        </Select>
+                        <Input
+                          placeholder="/data"
+                          className="w-28 font-mono text-[12px]"
+                          value={row.target}
+                          onChange={(e) => updateRunVolume(i, { ...row, target: e.target.value })}
+                        />
+                        <label className="flex cursor-pointer items-center gap-1 text-[12px] text-secondary">
+                          <Switch
+                            className="h-4 w-7"
+                            checked={row.ro}
+                            onCheckedChange={(v) => updateRunVolume(i, { ...row, ro: !!v })}
+                          />
+                          ro
+                        </label>
+                      </>
+                    ) : (
+                      <Input
+                        placeholder="宿主机目录:容器目录[:ro]"
+                        value={row.text}
+                        onChange={(e) => updateRunVolume(i, { ...row, text: e.target.value })}
+                      />
+                    )}
+                    <Button variant="ghost" size="icon-sm" onClick={() => removeRunVolume(i)}>
                       <X className="h-3.5 w-3.5" />
                     </Button>
                   </div>
                 ))}
-                <Button variant="outline" size="sm" className="justify-start" onClick={() => setRunVolumes([...runVolumes, ""])}>
-                  <Plus className="h-3.5 w-3.5" /> 添加卷挂载
-                </Button>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="justify-start"
+                    onClick={() =>
+                      setRunVolumes((rows) => [
+                        ...rows,
+                        { kind: "volume", key: nextVolKey(), name: "", target: "/data", ro: false },
+                      ])
+                    }
+                  >
+                    <Plus className="h-3.5 w-3.5" /> 挂载命名卷
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="justify-start text-secondary"
+                    onClick={() =>
+                      setRunVolumes((rows) => [
+                        ...rows,
+                        { kind: "bind", key: nextVolKey(), text: "" },
+                      ])
+                    }
+                  >
+                    <Plus className="h-3.5 w-3.5" /> 自定义路径
+                  </Button>
+                </div>
               </div>
             </div>
 
