@@ -51,10 +51,11 @@ impl LocalPtyManager {
         let sessions: Arc<TokioMutex<HashMap<String, LocalSession>>> =
             Arc::new(TokioMutex::new(HashMap::new()));
 
-        // 后台清理任务：shell 自然退出后回收子进程并移除会话映射
+        // 后台清理任务：shell 自然退出后回收子进程并移除会话映射。
+        // 注意：`new()` 可能在 tokio runtime 外被调用，须用 Tauri 的 async_runtime。
         {
             let sessions = sessions.clone();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 while let Some(session_id) = cleanup_rx.recv().await {
                     if let Some(s) = sessions.lock().await.remove(&session_id) {
                         s.running.store(false, Ordering::Relaxed);
