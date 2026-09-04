@@ -23,3 +23,27 @@ artifacts/
 
 # Tauri updater 签名私钥（绝不可提交；公钥在 tauri.conf.json）
 src-tauri/.signing/
+
+# 个人数据保护：dev-tools/ 仅存本机（历史清洗脚本+个人黑名单），绝不入库
+dev-tools/
+
+# 本地数据 / 凭据类文件，禁止入库
+.env
+.env.*
+*.env
+*.pem
+*.p12
+*.pfx
+*.key
+*.p8
+*.jks
+*.keystore
+*.der
+*.db
+*.sqlite
+*.sqlite3
+*.pcap
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519

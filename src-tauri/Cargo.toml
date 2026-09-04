@@ -20,7 +20,7 @@ path = "src/bin/mcp.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-updater = "2"
 tauri-plugin-sentry = "0.6"
 sentry = "0.49"
@@ -50,6 +50,8 @@ shell-words = "1"
 objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
+# 真原生毛玻璃：NSVisualEffectView vibrancy（桌面壁纸透过 chrome 材质）
+window-vibrancy = "0.7"
 
 [profile.release]
 codegen-units = 1

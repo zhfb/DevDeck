@@ -8,17 +8,17 @@ import { Progress } from "@/components/ui/progress";
 
 const mockLogs: LogLine[] = [
   { id: "l1", stream: "system", text: "DevDeck 会话启动 · 本地模式", time: new Date(Date.now() - 86_000).toISOString() },
-  { id: "l2", stream: "stdout", text: "course-reminder | INFO: Started server process [1]", time: new Date(Date.now() - 84_000).toISOString() },
-  { id: "l3", stream: "stdout", text: "course-reminder | INFO: Uvicorn running on http://0.0.0.0:8000", time: new Date(Date.now() - 84_000).toISOString() },
+  { id: "l2", stream: "stdout", text: "demo-app | INFO: Started server process [1]", time: new Date(Date.now() - 84_000).toISOString() },
+  { id: "l3", stream: "stdout", text: "demo-app | INFO: Uvicorn running on http://0.0.0.0:8000", time: new Date(Date.now() - 84_000).toISOString() },
   { id: "l4", stream: "stderr", text: "postgres-16  | 2026-08-19 04:12:33.112 UTC [42] LOG: checkpoint complete", time: new Date(Date.now() - 60_000).toISOString() },
-  { id: "l5", stream: "stdout", text: "nginx-gateway | 103.45.12.8 - - [19/Aug/2026:12:33:01 +0800] \"GET / HTTP/1.1\" 200 615", time: new Date(Date.now() - 30_000).toISOString() },
-  { id: "l6", stream: "stdout", text: "nginx-gateway | 103.45.12.8 - - [19/Aug/2026:12:33:02 +0800] \"GET /static/app.js HTTP/1.1\" 200 18920", time: new Date(Date.now() - 29_000).toISOString() },
-  { id: "l7", stream: "stdout", text: "course-reminder | INFO: 192.168.1.5:51234 - \"GET /health HTTP/1.1\" 200 OK", time: new Date(Date.now() - 12_000).toISOString() },
+  { id: "l5", stream: "stdout", text: "nginx-gateway | 198.51.100.7 - - [19/Aug/2026:12:33:01 +0800] \"GET / HTTP/1.1\" 200 615", time: new Date(Date.now() - 30_000).toISOString() },
+  { id: "l6", stream: "stdout", text: "nginx-gateway | 198.51.100.7 - - [19/Aug/2026:12:33:02 +0800] \"GET /static/app.js HTTP/1.1\" 200 18920", time: new Date(Date.now() - 29_000).toISOString() },
+  { id: "l7", stream: "stdout", text: "demo-app | INFO: 192.168.1.5:51234 - \"GET /health HTTP/1.1\" 200 OK", time: new Date(Date.now() - 12_000).toISOString() },
 ];
 
 const mockTasks: TaskItem[] = [
   { id: "t1", kind: "pull", title: "拉取镜像 searxng/searxng:latest", status: "success", progress: 100, detail: "完成 · 180 MB", startedAt: new Date(Date.now() - 3600_000).toISOString(), finishedAt: new Date(Date.now() - 3500_000).toISOString() },
-  { id: "t2", kind: "connect", title: "连接 香港 VPS (root@160.202.46.104)", status: "success", progress: 100, detail: "会话已建立", startedAt: new Date(Date.now() - 1800_000).toISOString(), finishedAt: new Date(Date.now() - 1798_000).toISOString() },
+  { id: "t2", kind: "connect", title: "连接 香港 VPS (root@203.0.113.10)", status: "success", progress: 100, detail: "会话已建立", startedAt: new Date(Date.now() - 1800_000).toISOString(), finishedAt: new Date(Date.now() - 1798_000).toISOString() },
   { id: "t3", kind: "pull", title: "拉取镜像 postgres:16-alpine", status: "running", progress: 62, detail: "112 MB / 180 MB · 8.4 MB/s", startedAt: new Date(Date.now() - 45_000).toISOString() },
 ];
 
@@ -55,21 +55,21 @@ export function BottomDock() {
 
   return (
     <div
-      className="flex shrink-0 flex-col border-t border-border-subtle bg-panel"
+      className="chrome-material-strong flex shrink-0 flex-col border-t border-border-subtle"
       style={{ height: bottomPanel.height }}
     >
-      {/* Dock header */}
-      <div className="flex h-8 shrink-0 items-center justify-between border-b border-border-subtle px-2">
-        <div className="flex items-center gap-0.5">
+      {/* Dock header — macOS segmented control */}
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-border-subtle px-2">
+        <div className="flex h-7 items-center gap-0.5 rounded-lg border border-border bg-input p-0.5">
           {TABS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => setBottomPanel({ tab: id })}
               className={cn(
-                "flex h-6 items-center gap-1.5 rounded-md px-2 text-[12px] transition-colors",
+                "flex h-5 items-center gap-1.5 rounded-[5px] px-2.5 text-[12px] transition-all",
                 bottomPanel.tab === id
-                  ? "bg-active-fill text-foreground"
-                  : "text-secondary hover:bg-hover-fill"
+                  ? "bg-elevated text-foreground shadow-[0_1px_2px_rgba(0,0,0,0.3),inset_0_1px_0_rgba(255,255,255,0.06)]"
+                  : "text-secondary hover:text-foreground"
               )}
             >
               <Icon className="h-3 w-3" />

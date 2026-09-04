@@ -20,6 +20,8 @@ const queryClient = new QueryClient({
 
 // init theme
 document.documentElement.dataset.theme = "dark";
+// Tauri 桌面模式标记：CSS 据此让 body 透明，露出原生 vibrancy 材质
+if (isTauri) document.documentElement.dataset.tauri = "true";
 
 // start mock event streams in browser preview mode
 if (!isTauri) startMockStreams();

@@ -45,6 +45,16 @@
   --hover-fill: rgba(255, 255, 255, 0.04);
   --active-fill: rgba(255, 255, 255, 0.08);
 
+  /*
+   * macOS materials — translucent chrome over the canvas gradient.
+   * Approximates NSVisualEffectView vibrancy: chrome sits slightly lighter
+   * than content, with a soft top sheen and backdrop blur.
+   */
+  --material: rgba(18, 21, 26, 0.72);
+  --material-strong: rgba(18, 21, 26, 0.86);
+  --material-tint: rgba(18, 21, 26, 0.45);
+  --material-blur: blur(28px) saturate(1.4);
+
   /* Radix/shadcn compat */
   --ring: rgba(10, 132, 255, 0.5);
   --popover: #1c2126;
@@ -86,6 +96,10 @@
   --accent-tint: rgba(0, 122, 255, 0.1);
   --hover-fill: rgba(0, 0, 0, 0.04);
   --active-fill: rgba(0, 0, 0, 0.06);
+  --material: rgba(255, 255, 255, 0.66);
+  --material-strong: rgba(255, 255, 255, 0.82);
+  --material-tint: rgba(255, 255, 255, 0.4);
+  --material-blur: blur(28px) saturate(1.3);
   --ring: rgba(0, 122, 255, 0.4);
   --popover: #ffffff;
   --popover-foreground: #1d2125;
@@ -103,6 +117,9 @@
   --color-panel: var(--panel);
   --color-surface: var(--surface);
   --color-elevated: var(--elevated);
+  --color-material: var(--material);
+  --color-material-strong: var(--material-strong);
+  --color-material-tint: var(--material-tint);
   --color-secondary: var(--secondary);
   --color-muted: var(--muted);
   --color-quaternary: var(--quaternary);
@@ -150,7 +167,6 @@
     overflow: hidden;
   }
   body {
-    background: var(--background);
     color: var(--foreground);
     font-family: var(--font-sans);
     font-size: 13px;
@@ -162,21 +178,32 @@
   ::selection {
     background: var(--selection);
   }
-  /* Thin macOS-style scrollbars */
+  /* macOS-style focus ring: blue, slightly offset, never dotted outline */
+  :focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--ring);
+  }
+  button:focus:not(:focus-visible) {
+    box-shadow: none;
+  }
+  /* Thin macOS overlay scrollbars (auto-hide track) */
   ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
   }
   ::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.14);
-    border-radius: 4px;
-    border: 2px solid transparent;
+    border-radius: 5px;
+    border: 3px solid transparent;
     background-clip: content-box;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.24);
     background-clip: content-box;
-    border: 2px solid transparent;
+    border: 3px solid transparent;
   }
   ::-webkit-scrollbar-corner {
     background: transparent;
@@ -184,11 +211,89 @@
   [data-theme="light"] ::-webkit-scrollbar-thumb {
     background: rgba(0, 0, 0, 0.2);
     background-clip: content-box;
-    border: 2px solid transparent;
+    border: 3px solid transparent;
   }
 }
 
+/*
+ * Canvas background — UNLAYERED on purpose. index.html ships an inline
+ * `html, body { background:#0b0d0f }` white-flash guard; unlayered rules beat
+ * layered (@layer base) ones, so the gradient must live outside the layer to
+ * actually win. Translucent chrome surfaces sit on top of this gradient,
+ * which is what gives the material sheen (macOS vibrancy approximation).
+ */
+body {
+  background:
+    radial-gradient(1100px 520px at 12% -8%, rgba(10, 132, 255, 0.055), transparent 62%),
+    linear-gradient(180deg, #13161b 0%, #0a0c0f 100%);
+  background-attachment: fixed;
+}
+[data-theme="light"] body {
+  background:
+    radial-gradient(1100px 520px at 12% -8%, rgba(0, 122, 255, 0.05), transparent 62%),
+    linear-gradient(180deg, #ffffff 0%, #edf0f2 100%);
+  background-attachment: fixed;
+}
+
+/*
+ * Tauri 桌面模式：webview 背景全透明，露出原生 NSVisualEffectView
+ * vibrancy 材质（真毛玻璃——桌面壁纸经 chrome 半透明层透出）。
+ * 内容面板仍以 --background 实色绘制，保证可读性。
+ */
+html[data-tauri="true"],
+html[data-tauri="true"] body {
+  background: transparent;
+  background-attachment: scroll;
+}
+/* Tauri 桌面模式：根容器不铺实色，让 chrome 材质层透出 vibrancy；
+   内容列（TabCanvas main）仍以 bg-background 实色绘制保持可读。 */
+html[data-tauri="true"] .app-root {
+  background: transparent;
+}
+
 @layer utilities {
+  /*
+   * macOS chrome material — translucent + backdrop blur, sits on the canvas
+   * gradient. Top hairline sheen mimics the native toolbar edge.
+   */
+  .chrome-material {
+    background-color: var(--material);
+    -webkit-backdrop-filter: var(--material-blur);
+    backdrop-filter: var(--material-blur);
+  }
+  .chrome-material-strong {
+    background-color: var(--material-strong);
+    -webkit-backdrop-filter: var(--material-blur);
+    backdrop-filter: var(--material-blur);
+  }
+  .chrome-material-tint {
+    background-color: var(--material-tint);
+    -webkit-backdrop-filter: var(--material-blur);
+    backdrop-filter: var(--material-blur);
+  }
+  /* Toolbar top sheen (hairline light edge, macOS convention) */
+  .chrome-sheen {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055);
+  }
+  [data-theme="light"] .chrome-sheen {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  }
+  /* Keyboard hint keycap */
+  .kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.25rem;
+    height: 1.25rem;
+    padding: 0 0.3rem;
+    border-radius: 5px;
+    border: 1px solid var(--border-subtle);
+    background: var(--hover-fill);
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    line-height: 1;
+    color: var(--muted);
+  }
   /* Text selection in terminal/technical panes */
   .select-text-all {
     user-select: text;

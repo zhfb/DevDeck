@@ -5,8 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DevDeck</title>
     <style>
-      /* Prevent white flash before Tauri loads */
-      html, body { background: #0b0d0f; }
+      /* Prevent white flash before Tauri loads — mirrors the canvas gradient
+         from globals.css (unlayered body rule wins after load). */
+      html, body {
+        background:
+          radial-gradient(1100px 520px at 12% -8%, rgba(10,132,255,0.055), transparent 62%),
+          linear-gradient(180deg, #13161b 0%, #0a0c0f 100%);
+      }
     </style>
   </head>
   <body>

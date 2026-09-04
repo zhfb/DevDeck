@@ -17,6 +17,10 @@ colors:
   text-quaternary: "#565C66"
   border-subtle: "rgba(255,255,255,0.06)"
   border-standard: "rgba(255,255,255,0.10)"
+  material: "rgba(18,21,26,0.72)"
+  material-strong: "rgba(18,21,26,0.86)"
+  canvas-gradient-top: "#13161B"
+  canvas-gradient-bottom: "#0A0C0F"
   success: "#30D158"
   warning: "#FFD60A"
   danger: "#FF453A"
@@ -161,6 +165,10 @@ components:
 
 DevDeck is a macOS-native developer workbench: SSH terminals, SFTP file management, Docker container control, and port tunnels — an information-dense operations console. The design language is **macOS-native restraint**: dark-first, precision-dense, with luminance-graded surfaces (the Linear model) and a single system-blue accent (macOS `#0A84FF`). No decorative gradients, no glassmorphism, no marketing framing. The UI earns hierarchy through type scale, spacing, and surface luminance steps — not through boxes, icons, or color.
 
+**Chrome materials.** The window chrome (nav rail, resource sidebar, tab strip, bottom dock) uses a translucent "material" (`--material` ≈ 72% panel) over a near-flat canvas gradient with a faint cool top-left glow, plus `backdrop-filter: blur(28px) saturate(1.4)`. This approximates macOS `NSVisualEffectView` vibrancy without a transparent window: chrome reads slightly lighter/softer than the solid content canvas. Content surfaces stay solid — translucency is reserved for chrome, never for cards or tables.
+
+**Native vibrancy (Tauri desktop).** When running as the macOS app, the window is `transparent: true` (`macOSPrivateApi: true` + `macos-private-api` cargo feature) and a real `NSVisualEffectView` is applied via `window-vibrancy` — `HudWindow` in dark, `UnderWindowBackground` in light (switched by the `window_set_vibrancy` command on theme change). In this mode `html[data-tauri]` makes the webview background transparent so the frosted desktop shows through the chrome materials; the content column stays opaque `--background` for readability. The CSS gradient + backdrop-filter remain as the browser-preview fallback.
+
 The dominant surface archetype is **Operate** (taking action on containers/hosts/tunnels) with **Monitor** moments (stats, logs, events). Composition favors dense tables, glanceable status, and keyboard-first interaction (Cmd+K command palette, tab-driven workspace).
 
 ## Colors
@@ -175,6 +183,8 @@ The dominant surface archetype is **Operate** (taking action on containers/hosts
 - **Semantic** — Success `#30D158`, Warning `#FFD60A`, Danger `#FF453A` (macOS system palette). Used ONLY for status signals (container state dots, health badges, destructive actions).
 - **Environment color cards** — Dev `#30D158`, Staging `#FFD60A`, Prod `#FF453A`. Small tinted labels on host entries.
 - **Borders** — Subtle `rgba(255,255,255,0.06)`, Standard `rgba(255,255,255,0.10)`. Borders are whisper-thin; elevation is communicated by surface luminance, not shadows.
+- **Materials (chrome)** — `--material rgba(18,21,26,0.72)`, `--material-strong rgba(18,21,26,0.86)`, `--material-tint rgba(18,21,26,0.45)`, blur 28px/saturate 1.4. Nav rail / sidebar / tab strip / dock only.
+- **Canvas** — near-flat vertical gradient (`#13161B → #0A0C0F`) + faint `rgba(10,132,255,0.055)` radial glow top-left; fixed attachment. Content areas render solid `#0B0D0F`.
 
 ### Light (secondary, toggleable)
 Canvas `#F5F6F7`, Panel `#EBEDEF`, Surface `#FFFFFF`, Border `#E0E3E6`, text ladder inverted with same roles, accent `#007AFF`.
@@ -200,7 +210,7 @@ Luminance stepping is the only elevation language:
 - Level 0 Canvas → Level 1 Panel → Level 2 Surface → Level 3 Elevated (each +3–5 luminance points)
 - Borders at 6–10% white opacity define containment
 - Shadows only for floating chrome: command palette, dialogs, context menus (`rgba(0,0,0,0.5)` 0 8px 24px)
-- No inset shadows, no glow, no blur (vibrancy excluded by design for consistency)
+- Inset shadows only for the chrome top sheen (hairline light edge on nav rail / dock). No glow, no decorative blur on content.
 
 ## Shapes
 
@@ -245,7 +255,8 @@ Luminance stepping is the only elevation language:
 - Confirm destructive actions (delete container/image, clear logs) with a dialog before executing.
 
 ### Don't
-- No gradients, no glow, no glassmorphism, no colorful icons — chrome is monochrome + system blue.
+- No decorative gradients, no glow, no glassmorphism, no colorful icons — chrome is monochrome + system blue. (The canvas gradient + chrome translucency is functional material, not decoration.)
+- Don't apply translucency to content surfaces (cards, tables, forms) — material is chrome-only.
 - No pure white text on dark — `#E8EAED` prevents harsh contrast.
 - No Inter/Google fonts — SF Pro is the native voice.
 - No marketing framing: no hero, no feature cards with icons, no decorative stats.
