@@ -58,9 +58,19 @@ export const usePalette = create<PaletteState>((set, get) => ({
 // ---------------------------------------------------------------------------
 // SSH connect dialog — every "connect" entry point opens this
 // ---------------------------------------------------------------------------
+export interface ConnectTarget {
+  hostId: string;
+  hostName: string;
+  address: string;
+  user: string;
+  /** 默认 22 */
+  port?: number;
+  /** 快速连接：未保存主机的临时连接（走 ssh_connect_adhoc，不落库） */
+  adhoc?: boolean;
+}
 interface ConnectState {
-  connectTarget: { hostId: string; hostName: string; address: string; user: string } | null;
-  openConnect: (t: { hostId: string; hostName: string; address: string; user: string }) => void;
+  connectTarget: ConnectTarget | null;
+  openConnect: (t: ConnectTarget) => void;
   closeConnect: () => void;
 }
 

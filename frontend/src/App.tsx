@@ -12,6 +12,7 @@ import { HostKeyDialog } from "./components/HostKeyDialog";
 import { useWorkspace } from "./stores/workspace";
 import { PowerController } from "./stores/power";
 import { useIdleLock } from "./stores/idleLock";
+import { useAppShortcuts } from "./lib/hotkeys";
 import LockScreen from "./features/lock/LockScreen";
 
 const PANEL_IDS = [
@@ -44,6 +45,8 @@ export default function App() {
     void initIdleLock();
   }, [initIdleLock]);
 
+  useAppShortcuts();
+
   const handleNavigate = (panel: string) => {
     const p = panel as NavPanelId;
     setCurrentPanel(p);
@@ -56,7 +59,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <div className="flex h-full flex-col bg-background text-foreground">
+      <div className="app-root flex h-full flex-col bg-background text-foreground">
         <PowerController />
         <NavRail current={currentPanel} onNavigate={handleNavigate} />
         <div className="flex min-h-0 flex-1">

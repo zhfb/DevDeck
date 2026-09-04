@@ -2,10 +2,12 @@ import { useEffect, useMemo } from "react";
 import { Command } from "cmdk";
 import { Search, Terminal, Boxes, Monitor, Waypoints, Sun, Moon, LayoutDashboard, Server, Layers, Activity, Settings } from "lucide-react";
 import { useUi } from "@/stores/workspace";
-import { usePalette, useConnect } from "@/stores/live";
+import { usePalette, useConnect, useLive } from "@/stores/live";
 import { useWorkspace } from "@/stores/workspace";
 import { useHosts, useContainers, useEngines } from "@/lib/queries";
 import type { Host } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import { toast } from "@/components/ui/sonner";
 import type { NavPanelId } from "./NavRail";
 
 const PANEL_ICONS: Record<string, React.ElementType> = {
@@ -21,8 +23,9 @@ const PANEL_ICONS: Record<string, React.ElementType> = {
 /** Cmd+K global command palette — search hosts/containers/actions */
 export function CommandPalette({ onOpenPanel }: { onOpenPanel: (p: NavPanelId) => void }) {
   const { commandPaletteOpen, setCommandPaletteOpen, toggleTheme } = useUi();
-  const { openTab } = useWorkspace();
+  const { openTab, tabs, setActiveTab } = useWorkspace();
   const openConnect = useConnect((s) => s.openConnect);
+  const sessions = useLive((s) => s.sessions);
   const { actions } = usePalette();
   const { data: hosts } = useHosts();
   const { data: containers } = useContainers();
@@ -88,10 +91,41 @@ export function CommandPalette({ onOpenPanel }: { onOpenPanel: (p: NavPanelId) =
           setCommandPaletteOpen(false);
         },
       })),
+      // SSH 会话：一键切换到对应终端标签
+      ...Object.entries(sessions).map(([sessionId, s]) => {
+        const tab = tabs.find(
+          (t) => t.sessionId === sessionId || t.panes?.some((p) => p.sessionId === sessionId)
+        );
+        const statusLabel =
+          s.status === "connected" ? "已连接" : s.status === "reconnecting" ? "重连中" : s.status === "connecting" ? "连接中" : s.status;
+        return {
+          id: `session-${sessionId}`,
+          group: "SSH 会话",
+          title: tab?.title ?? s.title ?? s.hostId,
+          keywords: `ssh 会话 ${statusLabel} ${s.hostId}`,
+          icon: (
+            <Terminal
+              className={cn(
+                "h-3.5 w-3.5",
+                s.status === "connected" ? "text-success" : s.status === "reconnecting" || s.status === "connecting" ? "text-warning" : "text-muted"
+              )}
+            />
+          ),
+          onSelect: () => {
+            if (tab) {
+              setActiveTab(tab.id);
+              toast.success(`已切换到 ${tab.title}`);
+            } else {
+              toast.info("该会话对应标签已关闭");
+            }
+            setCommandPaletteOpen(false);
+          },
+        };
+      }),
     ];
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hosts, containers, engines, actions]);
+  }, [hosts, containers, engines, actions, sessions, tabs]);
 
   if (!commandPaletteOpen) return null;
 
@@ -116,7 +150,7 @@ export function CommandPalette({ onOpenPanel }: { onOpenPanel: (p: NavPanelId) =
           </div>
           <Command.List className="max-h-[320px] overflow-y-auto p-1.5">
             <Command.Empty className="py-8 text-center text-[13px] text-muted">无匹配结果</Command.Empty>
-            {["主机", "容器", "引擎", ...Array.from(new Set(items.filter((i) => !["主机", "容器", "引擎"].includes(i.group)).map((i) => i.group)))].map(
+            {["主机", "SSH 会话", "容器", "引擎", ...Array.from(new Set(items.filter((i) => !["主机", "SSH 会话", "容器", "引擎"].includes(i.group)).map((i) => i.group)))].map(
               (group) => {
                 const groupItems = items.filter((i) => i.group === group);
                 if (!groupItems.length) return null;

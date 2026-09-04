@@ -90,13 +90,14 @@ const mockHosts: Host[] = [
   {
     id: "h-ali-hk",
     name: "香港 VPS",
-    address: "160.202.46.104",
+    address: "203.0.113.10",
     port: 22,
     user: "root",
     groupId: "g-prod",
     env: "prod",
     credentialRef: "keychain://h-ali-hk",
     fingerprint: "SHA256:Qf9…k2Mp",
+    favorite: true,
     lastConnectedAt: iso(3600_000 * 3),
     createdAt: iso(86400_000 * 20),
   },
@@ -109,6 +110,7 @@ const mockHosts: Host[] = [
     groupId: "g-dev",
     env: "dev",
     credentialRef: "keychain://h-dev-mac",
+    favorite: false,
     lastConnectedAt: iso(3600_000 * 26),
     createdAt: iso(86400_000 * 15),
   },
@@ -162,8 +164,8 @@ const mockContainers: Container[] = [
   },
   {
     id: "3e2d1c0b9a8f7e6d5c4b",
-    name: "course-reminder",
-    image: "ghcr.io/zhfb/course-reminder:latest",
+    name: "demo-app",
+    image: "ghcr.io/example/demo-app:latest",
     state: "running",
     status: "Up 12 days",
     engineId: "eng-orb",
@@ -207,7 +209,7 @@ const mockImages: DockerImage[] = [
   { id: "sha256:a1b2…c3", repoTag: "nginx:1.27-alpine", size: 42_000_000, created: iso(86400_000 * 30), engineId: "eng-orb" },
   { id: "sha256:d4e5…f6", repoTag: "postgres:16-alpine", size: 210_000_000, created: iso(86400_000 * 25), engineId: "eng-orb" },
   { id: "sha256:g7h8…i9", repoTag: "redis:7-alpine", size: 41_000_000, created: iso(86400_000 * 25), engineId: "eng-orb" },
-  { id: "sha256:j1k2…l3", repoTag: "ghcr.io/zhfb/course-reminder:latest", size: 96_000_000, created: iso(86400_000 * 12), engineId: "eng-orb" },
+  { id: "sha256:j1k2…l3", repoTag: "ghcr.io/example/demo-app:latest", size: 96_000_000, created: iso(86400_000 * 12), engineId: "eng-orb" },
   { id: "sha256:m4n5…o6", repoTag: "searxng/searxng:latest", size: 180_000_000, created: iso(86400_000 * 30), engineId: "eng-orb" },
   { id: "sha256:p7q8…r9", repoTag: "grafana/grafana:10.4.2", size: 280_000_000, created: iso(86400_000 * 40), engineId: "eng-orb" },
   { id: "sha256:s1t2…u3", repoTag: "hello-world:latest", size: 9_000_000, created: iso(86400_000 * 60), engineId: "eng-orb" },
@@ -334,8 +336,44 @@ function genHistory(hostId: string, points = 60): HostStatsHistoryPoint[] {
 // ---------------------------------------------------------------------------
 // Mock command handlers
 // ---------------------------------------------------------------------------
+/** 内存版远程 SFTP 文件系统（浏览器 mock 专用，支持 mkdir/remove/rename） */
+const mockRemoteFs: Record<string, { name: string; path: string; kind: "file" | "directory"; size: number; modifiedAt: string }[]> = {
+  "/": [
+    { name: "etc", path: "/etc", kind: "directory", size: 0, modifiedAt: iso(86400_000 * 3) },
+    { name: "var", path: "/var", kind: "directory", size: 0, modifiedAt: iso(86400_000 * 3) },
+    { name: "home", path: "/home", kind: "directory", size: 0, modifiedAt: iso(86400_000 * 3) },
+    { name: "srv", path: "/srv", kind: "directory", size: 0, modifiedAt: iso(86400_000 * 2) },
+    { name: "deploy.sh", path: "/deploy.sh", kind: "file", size: 18_432, modifiedAt: iso(86400_000) },
+    { name: "app.log", path: "/app.log", kind: "file", size: 2_147_483_648, modifiedAt: iso(3600_000 * 2) },
+    { name: "nginx.conf", path: "/nginx.conf", kind: "file", size: 3_560, modifiedAt: iso(86400_000 * 4) },
+    { name: "backup.tar.gz", path: "/backup.tar.gz", kind: "file", size: 523_878_400, modifiedAt: iso(86400_000 * 7) },
+  ],
+  "/etc": [
+    { name: "nginx", path: "/etc/nginx", kind: "directory", size: 0, modifiedAt: iso(86400_000 * 2) },
+    { name: "hosts", path: "/etc/hosts", kind: "file", size: 231, modifiedAt: iso(86400_000 * 30) },
+    { name: "passwd", path: "/etc/passwd", kind: "file", size: 1_024, modifiedAt: iso(86400_000 * 20) },
+    { name: "resolv.conf", path: "/etc/resolv.conf", kind: "file", size: 89, modifiedAt: iso(86400_000 * 12) },
+  ],
+  "/var": [
+    { name: "log", path: "/var/log", kind: "directory", size: 0, modifiedAt: iso(86400_000) },
+    { name: "www", path: "/var/www", kind: "directory", size: 0, modifiedAt: iso(86400_000) },
+  ],
+  "/var/log": [
+    { name: "syslog", path: "/var/log/syslog", kind: "file", size: 4_096_000, modifiedAt: iso(3600_000) },
+    { name: "nginx", path: "/var/log/nginx", kind: "directory", size: 0, modifiedAt: iso(3600_000 * 2) },
+  ],
+  "/home": [{ name: "deploy", path: "/home/deploy", kind: "directory", size: 0, modifiedAt: iso(86400_000) }],
+  "/home/deploy": [
+    { name: ".ssh", path: "/home/deploy/.ssh", kind: "directory", size: 0, modifiedAt: iso(86400_000 * 9) },
+    { name: "www", path: "/home/deploy/www", kind: "directory", size: 0, modifiedAt: iso(86400_000) },
+    { name: "README.md", path: "/home/deploy/README.md", kind: "file", size: 1_280, modifiedAt: iso(86400_000 * 2) },
+  ],
+};
+
 export const mockHandlers: Record<string, (a: any) => unknown> = {
   "engines_list": async () => mockEngines,
+  // 原生 vibrancy 仅 Tauri 桌面有效；浏览器 mock 下无操作
+  "window_set_vibrancy": async () => ({ ok: true }),
   // 内置 Docker 引擎（浏览器 mock：模拟"未安装/未启动"，Tauri 里走真实 limactl）
   "embedded_status": async (): Promise<EmbeddedStatus> => ({
     installed: false,
@@ -470,15 +508,70 @@ export const mockHandlers: Record<string, (a: any) => unknown> = {
       keepConnections: true,
     },
   }),
-  "local_fs_list": async ({ path }: { path?: string }) => [
-    { name: "src", path: `${path ?? "."}/src`, kind: "directory", size: 0 },
-    { name: "README.md", path: `${path ?? "."}/README.md`, kind: "file", size: 3570 },
-  ],
-  "sftp_list": async ({ path }: { path: string }) => [
-    { name: "etc", path: `${path === "/" ? "" : path}/etc`, kind: "directory", size: 0 },
-    { name: "var", path: `${path === "/" ? "" : path}/var`, kind: "directory", size: 0 },
-    { name: "deploy.txt", path: `${path === "/" ? "" : path}/deploy.txt`, kind: "file", size: 18_432 },
-  ],
+  "local_fs_list": async ({ path }: { path?: string }) => {
+    const dir = path ?? ".";
+    if (dir === ".")
+      return [
+        { name: "src", path: "./src", kind: "directory", size: 0, modifiedAt: iso(86400_000 * 2) },
+        { name: "docs", path: "./docs", kind: "directory", size: 0, modifiedAt: iso(86400_000 * 5) },
+        { name: "README.md", path: "./README.md", kind: "file", size: 11_357, modifiedAt: iso(86400_000) },
+        { name: "package.json", path: "./package.json", kind: "file", size: 2_408, modifiedAt: iso(3600_000 * 5) },
+        { name: "tsconfig.json", path: "./tsconfig.json", kind: "file", size: 1_102, modifiedAt: iso(3600_000 * 9) },
+        { name: "vite.config.ts", path: "./vite.config.ts", kind: "file", size: 640, modifiedAt: iso(3600_000 * 12) },
+        { name: "dev.log", path: "./dev.log", kind: "file", size: 4_208_332, modifiedAt: iso(3600_000 * 0.5) },
+      ];
+    if (dir === "./src")
+      return [
+        { name: "app", path: "./src/app", kind: "directory", size: 0, modifiedAt: iso(86400_000) },
+        { name: "features", path: "./src/features", kind: "directory", size: 0, modifiedAt: iso(86400_000) },
+        { name: "lib", path: "./src/lib", kind: "directory", size: 0, modifiedAt: iso(3600_000 * 3) },
+        { name: "main.tsx", path: "./src/main.tsx", kind: "file", size: 1_845, modifiedAt: iso(3600_000 * 8) },
+      ];
+    return [];
+  },
+  "sftp_list": async ({ path }: { path: string }) => mockRemoteFs[path] ?? [],
+  "sftp_mkdir": async ({ path }: { path: string }) => {
+    const parent = path.slice(0, path.lastIndexOf("/")) || "/";
+    const name = path.slice(path.lastIndexOf("/") + 1);
+    mockRemoteFs[parent] = mockRemoteFs[parent] ?? [];
+    if (!mockRemoteFs[parent].some((e) => e.path === path)) {
+      mockRemoteFs[parent].push({ name, path, kind: "directory", size: 0, modifiedAt: new Date().toISOString() });
+    }
+    mockRemoteFs[path] = [];
+    return { ok: true };
+  },
+  "sftp_remove": async ({ path, directory }: { path: string; directory?: boolean }) => {
+    for (const dir of Object.keys(mockRemoteFs)) {
+      mockRemoteFs[dir] = mockRemoteFs[dir].filter(
+        (e) => e.path !== path && !(directory && e.path.startsWith(`${path}/`))
+      );
+    }
+    if (directory) delete mockRemoteFs[path];
+    return { ok: true };
+  },
+  "sftp_rename": async ({ oldPath, newPath }: { oldPath: string; newPath: string }) => {
+    const targetDir = newPath.slice(0, newPath.lastIndexOf("/")) || "/";
+    const newName = newPath.slice(newPath.lastIndexOf("/") + 1);
+    for (const dir of Object.keys(mockRemoteFs)) {
+      mockRemoteFs[dir] = mockRemoteFs[dir].map((e) => {
+        if (e.path === oldPath) {
+          return { ...e, name: newName, path: newPath };
+        }
+        if (e.path.startsWith(`${oldPath}/`)) {
+          return { ...e, path: newPath + e.path.slice(oldPath.length) };
+        }
+        return e;
+      });
+    }
+    if (mockRemoteFs[oldPath]) {
+      mockRemoteFs[newPath] = mockRemoteFs[oldPath].map((e) => ({
+        ...e,
+        path: newPath + e.path.slice(oldPath.length),
+      }));
+      delete mockRemoteFs[oldPath];
+    }
+    return { ok: true };
+  },
 };
 
 // SSH mock handlers (object literal continues separately — see above)
@@ -486,6 +579,14 @@ mockHandlers["ssh_connect"] = async (a: { hostId: string }) => ({
   sessionId: `sess-mock-${a.hostId}`,
   hostId: a.hostId,
   title: "demo",
+  status: "connected",
+  startedAt: new Date().toISOString(),
+});
+mockHandlers["ssh_connect_adhoc"] = async (a: { address: string; user: string; port?: number }) => ({
+  sessionId: `sess-mock-adhoc-${Date.now().toString(36)}`,
+  // 与真实后端保持一致：adhoc 主机 id 为随机 uuid，前端不应解析其格式
+  hostId: `adhoc-${crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)}`,
+  title: `${a.user}@${a.address}`,
   status: "connected",
   startedAt: new Date().toISOString(),
 });
@@ -498,6 +599,7 @@ mockHandlers["ssh_reconnect"] = async (a: { sessionId: string; hostId: string })
 });
 mockHandlers["term_input"] = async () => ({ ok: true });
 mockHandlers["term_resize"] = async () => ({ ok: true });
+mockHandlers["ssh_disconnect"] = async () => ({ ok: true });
 mockHandlers["sftp_transfer"] = async ({ direction, localPath, remotePath }: { direction: "upload" | "download"; localPath: string; remotePath: string }) => {
   const taskId = `sftp-mock-${Date.now().toString(36)}`;
   void (async () => {
@@ -785,7 +887,7 @@ export function startMockStreams() {
   }, 5000);
   // occasional docker event
   const events: DockerEventItem[] = [
-    { id: "ev-1", time: iso(60_000 * 42), type: "container", action: "start", actor: "course-reminder", engineId: "eng-orb", hostName: "本地引擎" },
+    { id: "ev-1", time: iso(60_000 * 42), type: "container", action: "start", actor: "demo-app", engineId: "eng-orb", hostName: "本地引擎" },
     { id: "ev-2", time: iso(60_000 * 37), type: "container", action: "die", actor: "grafana-old", engineId: "eng-orb", hostName: "本地引擎" },
     { id: "ev-3", time: iso(60_000 * 21), type: "image", action: "pull", actor: "nginx:1.27-alpine", engineId: "eng-orb", hostName: "本地引擎" },
     { id: "ev-4", time: iso(60_000 * 9), type: "container", action: "health_status", actor: "postgres-16", engineId: "eng-orb", hostName: "本地引擎" },

@@ -1,6 +1,8 @@
-import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
+import { useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import {
   Cable,
+  ChevronDown,
+  ChevronRight,
   Info,
   MoreHorizontal,
   Pencil,
@@ -8,7 +10,9 @@ import {
   Plus,
   Search,
   Server,
+  Star,
   Trash2,
+  Zap,
 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
 import { useHostGroups, useHosts, useHostStats } from "@/lib/queries";
@@ -114,9 +118,30 @@ const emptyForm: HostForm = {
   jumpUser: "",
 };
 
+/** 解析快速连接输入：root@host:2222 / host / 203.0.113.10:22 */
+function parseQuick(input: string): { user: string; address: string; port: number } | null {
+  let s = input.trim();
+  if (!s) return null;
+  let user = "root";
+  let port = 22;
+  const at = s.lastIndexOf("@");
+  if (at > 0 && at < s.length - 1) {
+    user = s.slice(0, at).trim();
+    s = s.slice(at + 1).trim();
+  }
+  // 形如 [::1]:2222 或 host:port / ip:port
+  const m = s.match(/^(\[[^\]]+\]|[^:]+):(\d+)$/);
+  if (m) {
+    s = m[1];
+    port = Number(m[2]);
+  }
+  if (!s) return null;
+  return { user, address: s, port };
+}
+
 /**
- * SSH 主机管理面板 — 按分组展示主机，支持搜索、连接、详情、编辑/测试/删除。
- * 规格：docs/管理面板规划.md §4.2
+ * SSH 主机管理面板 — 快速连接 + 收藏/最近 + 分组表格。
+ * 收藏/最近连接置顶，其余按分组展示；支持搜索、真实编辑/测试/删除。
  */
 export default function HostsPanel(_props: PanelProps) {
   const { data: hosts } = useHosts();
@@ -124,67 +149,211 @@ export default function HostsPanel(_props: PanelProps) {
   const { hostOnline } = useLive();
   const { openTab } = useWorkspace();
   const openConnect = useConnect((s) => s.openConnect);
-
-  const [search, setSearch] = useState("");
-  const [addOpen, setAddOpen] = useState(false);
-  const [form, setForm] = useState<HostForm>(emptyForm);
-  const [deleteHost, setDeleteHost] = useState<Host | null>(null);
   const queryClient = useQueryClient();
 
+  const [search, setSearch] = useState("");
+  const [quick, setQuick] = useState("");
+  const [quickFocus, setQuickFocus] = useState(false);
+  const quickRef = useRef<HTMLInputElement>(null);
+
+  const [addOpen, setAddOpen] = useState(false);
+  const [editing, setEditing] = useState<Host | null>(null);
+  const [form, setForm] = useState<HostForm>(emptyForm);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [deleteHost, setDeleteHost] = useState<Host | null>(null);
+
   const query = search.trim().toLowerCase();
+  const searching = query.length > 0;
+
   const filtered = useMemo(
     () =>
       (hosts ?? []).filter(
-        (h) => !query || h.name.toLowerCase().includes(query) || h.address.toLowerCase().includes(query)
+        (h) => !query || h.name.toLowerCase().includes(query) || h.address.toLowerCase().includes(query) || h.user.toLowerCase().includes(query)
       ),
     [hosts, query]
   );
 
+  // 收藏 / 最近连接 / 其余分组
+  const favorites = useMemo(
+    () => (hosts ?? []).filter((h) => h.favorite),
+    [hosts]
+  );
+  const recents = useMemo(
+    () =>
+      (hosts ?? [])
+        .filter((h) => !h.favorite && h.lastConnectedAt)
+        .sort((a, b) => (b.lastConnectedAt ?? "").localeCompare(a.lastConnectedAt ?? ""))
+        .slice(0, 5),
+    [hosts]
+  );
+  const pinnedIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const h of favorites) s.add(h.id);
+    for (const h of recents) s.add(h.id);
+    return s;
+  }, [favorites, recents]);
+
+  const grouped = useMemo(
+    () =>
+      groups?.map((g) => ({
+        group: g,
+        items: filtered.filter((h) => h.groupId === g.id && !pinnedIds.has(h.id)),
+      })) ?? [],
+    [groups, filtered, pinnedIds]
+  );
+  const orphans = filtered.filter((h) => !groups?.some((g) => g.id === h.groupId) && !pinnedIds.has(h.id));
+
   const connect = (host: Host) => {
-    openConnect({ hostId: host.id, hostName: host.name, address: host.address, user: host.user });
+    openConnect({ hostId: host.id, hostName: host.name, address: host.address, user: host.user, port: host.port });
   };
 
   const openDetail = (host: Host) => {
     openTab({ kind: "host-detail", title: host.name, hostId: host.id, env: host.env });
   };
 
+  // ---- 快速连接 ----
+  const quickSuggestions = useMemo(() => {
+    if (!quick.trim()) return [];
+    const q = quick.trim().toLowerCase();
+    const matches = (hosts ?? []).filter(
+      (h) => h.name.toLowerCase().includes(q) || h.address.toLowerCase().includes(q)
+    );
+    return matches;
+  }, [quick, hosts]);
+
+  const runQuickConnect = (raw?: string) => {
+    const input = raw ?? quick;
+    const parsed = parseQuick(input);
+    if (!parsed) return;
+    const hasExplicitUser = input.includes("@");
+    const saved = (hosts ?? []).find(
+      (h) => h.address === parsed.address && h.port === parsed.port
+    );
+    if (saved) {
+      openConnect({ hostId: saved.id, hostName: saved.name, address: saved.address, user: hasExplicitUser ? parsed.user : saved.user, port: saved.port });
+    } else {
+      openConnect({
+        hostId: "",
+        hostName: `${parsed.user}@${parsed.address}`,
+        address: parsed.address,
+        user: parsed.user,
+        port: parsed.port,
+        adhoc: true,
+      });
+    }
+    setQuick("");
+    quickRef.current?.blur();
+  };
+
+  // ---- 新增 / 编辑 ----
+  const openAddDialog = () => {
+    setEditing(null);
+    setForm({ ...emptyForm, groupId: groups?.[0]?.id ?? "g-dev" });
+    setShowAdvanced(false);
+    setAddOpen(true);
+  };
+
+  const openEditDialog = (host: Host) => {
+    setEditing(host);
+    setForm({
+      name: host.name,
+      address: host.address,
+      port: String(host.port),
+      user: host.user,
+      groupId: host.groupId,
+      auth: host.credentialRef ? "keychain" : "password",
+      password: "",
+      jumpHost: host.jumpHost ?? "",
+      jumpPort: String(host.jumpPort ?? 22),
+      jumpUser: host.jumpUser ?? "",
+    });
+    setShowAdvanced(Boolean(host.jumpHost));
+    setAddOpen(true);
+  };
+
   const handleSave = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const editingHost = editing;
     try {
       const group = groups?.find((g) => g.id === form.groupId);
+      const host: Host = {
+        id: editingHost?.id ?? `h-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        name: form.name.trim(),
+        address: form.address.trim(),
+        port: Number(form.port) || 22,
+        user: form.user.trim() || "root",
+        groupId: group?.id ?? "g-dev",
+        env: group?.env ?? "dev",
+        credentialRef: editingHost?.credentialRef ?? "",
+        fingerprint: editingHost?.fingerprint ?? undefined,
+        lastConnectedAt: editingHost?.lastConnectedAt ?? undefined,
+        jumpHost: form.jumpHost.trim() || undefined,
+        jumpPort: form.jumpHost.trim() ? Number(form.jumpPort) || 22 : undefined,
+        jumpUser: form.jumpHost.trim() ? form.jumpUser.trim() || undefined : undefined,
+        favorite: editingHost?.favorite ?? false,
+        createdAt: editingHost?.createdAt ?? new Date().toISOString(),
+      };
       await invoke("hosts_save", {
-        host: {
-          id: `h-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-          name: form.name.trim(),
-          address: form.address.trim(),
-          port: Number(form.port) || 22,
-          user: form.user.trim() || "root",
-          groupId: group?.id ?? "g-dev",
-          env: group?.env ?? "dev",
-          credentialRef: null,
-          fingerprint: null,
-          lastConnectedAt: null,
-          jumpHost: form.jumpHost.trim() || null,
-          jumpPort: form.jumpHost.trim() ? Number(form.jumpPort) || 22 : null,
-          jumpUser: form.jumpHost.trim() ? form.jumpUser.trim() || null : null,
-          createdAt: new Date().toISOString(),
-        },
+        host,
         password: form.auth === "password" && form.password ? form.password : null,
       });
       await queryClient.invalidateQueries({ queryKey: ["hosts"] });
-      toast.success(`已保存主机「${form.name}」`);
+      toast.success(editingHost ? `已更新主机「${form.name}」` : `已保存主机「${form.name}」`);
       setAddOpen(false);
       setForm({ ...emptyForm });
     } catch (err) {
-      toast.error("保存主机失败", { description: String(err) });
+      toast.error(editingHost ? "更新主机失败" : "保存主机失败", { description: String(err) });
     }
   };
 
-  const openAddDialog = () => {
-    // default the group select to the first group so new hosts don't silently
-    // land in an unexpected env
-    setForm({ ...emptyForm, groupId: groups?.[0]?.id ?? "g-dev" });
-    setAddOpen(true);
+  const testForm = async () => {
+    if (!form.address.trim()) return;
+    setTesting(true);
+    try {
+      const session = await invoke<{ sessionId: string }>("ssh_connect_adhoc", {
+        address: form.address.trim(),
+        user: form.user.trim() || "root",
+        port: Number(form.port) || 22,
+        password: form.auth === "password" && form.password ? form.password : null,
+        cols: 80,
+        rows: 24,
+      });
+      void invoke("ssh_disconnect", { sessionId: session.sessionId }).catch(() => {});
+      toast.success("连接测试通过");
+    } catch (err) {
+      toast.error("连接测试失败", { description: String(err) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const testHost = async (host: Host) => {
+    try {
+      const session = await invoke<{ sessionId: string }>("ssh_connect", {
+        hostId: host.id,
+        password: null,
+        cols: 80,
+        rows: 24,
+      });
+      void invoke("ssh_disconnect", { sessionId: session.sessionId }).catch(() => {});
+      toast.success(`连接测试通过：${host.user}@${host.address}:${host.port}`);
+    } catch (err) {
+      toast.error("连接测试失败", { description: String(err) });
+    }
+  };
+
+  const toggleFavorite = async (host: Host) => {
+    try {
+      await invoke("hosts_save", {
+        host: { ...host, favorite: !host.favorite },
+        password: null,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["hosts"] });
+      toast.success(!host.favorite ? `已将「${host.name}」加入收藏` : `已取消收藏「${host.name}」`);
+    } catch (err) {
+      toast.error("更新收藏失败", { description: String(err) });
+    }
   };
 
   const handleDelete = async () => {
@@ -202,15 +371,66 @@ export default function HostsPanel(_props: PanelProps) {
   const set = (field: keyof HostForm) => (value: string) =>
     setForm((f) => ({ ...f, [field]: value }));
 
-  const grouped =
-    groups?.map((g) => ({ group: g, items: filtered.filter((h) => h.groupId === g.id) })) ?? [];
-  const orphans = filtered.filter((h) => !groups?.some((g) => g.id === h.groupId));
-
   return (
     <div className="flex h-full flex-col">
-      {/* 工具栏 */}
+      {/* 工具栏：快速连接 + 搜索 + 添加 */}
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-4">
-        <div className="relative w-64">
+        <div className="relative w-72">
+          <Zap className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-quaternary" />
+          <Input
+            ref={quickRef}
+            value={quick}
+            onChange={(e) => setQuick(e.target.value)}
+            onFocus={() => setQuickFocus(true)}
+            onBlur={() => setTimeout(() => setQuickFocus(false), 120)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") runQuickConnect();
+              if (e.key === "Escape") setQuick("");
+            }}
+            placeholder="root@host:22 快速连接…"
+            className="pl-7"
+          />
+          {quickFocus && quick.trim() && (
+            <div className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-lg border border-border bg-elevated py-1 shadow-[0_8px_24px_rgba(0,0,0,0.5)]">
+              {quickSuggestions.map((h) => (
+                <button
+                  key={h.id}
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] hover:bg-hover-fill"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    connect(h);
+                    setQuick("");
+                    setQuickFocus(false);
+                  }}
+                >
+                  <Star className={cn("h-3 w-3", h.favorite ? "fill-warning text-warning" : "text-quaternary")} />
+                  <span className="min-w-0 flex-1 truncate text-foreground">{h.name}</span>
+                  <span className="mono-caption text-muted">
+                    {h.user}@{h.address}:{h.port}
+                  </span>
+                </button>
+              ))}
+              {(() => {
+                const p = parseQuick(quick);
+                return p ? (
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 border-t border-border-subtle px-3 py-1.5 text-left text-[12px] text-accent hover:bg-hover-fill"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      runQuickConnect();
+                    }}
+                  >
+                    <Zap className="h-3 w-3" />
+                    连接新主机 {p.user}@{p.address}:{p.port}（不落库）
+                  </button>
+                ) : null;
+              })()}
+            </div>
+          )}
+        </div>
+        <div className="relative w-56">
           <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-quaternary" />
           <Input
             value={search}
@@ -232,19 +452,13 @@ export default function HostsPanel(_props: PanelProps) {
               <span className="text-[13px] text-secondary">没有匹配的主机</span>
               <span className="text-[12px] text-muted">试试其他关键词，或点击右上角添加主机</span>
             </div>
-          ) : (
+          ) : searching ? (
             <div className="flex flex-col gap-5">
               {grouped.map(({ group, items }) =>
                 items.length === 0 ? null : (
                   <section key={group.id}>
-                    <div className="mb-1.5 flex items-center gap-2 px-1">
-                      <EnvTag env={group.env} />
-                      <span className="text-[13px] font-semibold" style={{ color: group.color }}>
-                        {group.name}
-                      </span>
-                      <span className="mono-caption text-quaternary">{items.length}</span>
-                    </div>
-                    <HostTable hosts={items} onlineOf={hostOnline} onConnect={connect} onDetail={openDetail} onDelete={setDeleteHost} />
+                    <GroupHeader group={group} count={items.length} />
+                    <HostTable hosts={items} onlineOf={hostOnline} onConnect={connect} onDetail={openDetail} onEdit={openEditDialog} onTest={testHost} onFavorite={toggleFavorite} onDelete={setDeleteHost} />
                   </section>
                 )
               )}
@@ -255,7 +469,48 @@ export default function HostsPanel(_props: PanelProps) {
                     <span className="text-[13px] font-semibold text-secondary">未分组</span>
                     <span className="mono-caption text-quaternary">{orphans.length}</span>
                   </div>
-                  <HostTable hosts={orphans} onlineOf={hostOnline} onConnect={connect} onDetail={openDetail} onDelete={setDeleteHost} />
+                  <HostTable hosts={orphans} onlineOf={hostOnline} onConnect={connect} onDetail={openDetail} onEdit={openEditDialog} onTest={testHost} onFavorite={toggleFavorite} onDelete={setDeleteHost} />
+                </section>
+              )}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-5">
+              {favorites.length > 0 && (
+                <section>
+                  <div className="mb-1.5 flex items-center gap-2 px-1">
+                    <Star className="h-3.5 w-3.5 fill-warning text-warning" />
+                    <span className="text-[13px] font-semibold">收藏</span>
+                    <span className="mono-caption text-quaternary">{favorites.length}</span>
+                  </div>
+                  <HostTable hosts={favorites} onlineOf={hostOnline} onConnect={connect} onDetail={openDetail} onEdit={openEditDialog} onTest={testHost} onFavorite={toggleFavorite} onDelete={setDeleteHost} />
+                </section>
+              )}
+              {recents.length > 0 && (
+                <section>
+                  <div className="mb-1.5 flex items-center gap-2 px-1">
+                    <Play className="h-3 w-3 text-secondary" />
+                    <span className="text-[13px] font-semibold">最近连接</span>
+                    <span className="mono-caption text-quaternary">{recents.length}</span>
+                  </div>
+                  <HostTable hosts={recents} onlineOf={hostOnline} onConnect={connect} onDetail={openDetail} onEdit={openEditDialog} onTest={testHost} onFavorite={toggleFavorite} onDelete={setDeleteHost} />
+                </section>
+              )}
+              {grouped.map(({ group, items }) =>
+                items.length === 0 ? null : (
+                  <section key={group.id}>
+                    <GroupHeader group={group} count={items.length} />
+                    <HostTable hosts={items} onlineOf={hostOnline} onConnect={connect} onDetail={openDetail} onEdit={openEditDialog} onTest={testHost} onFavorite={toggleFavorite} onDelete={setDeleteHost} />
+                  </section>
+                )
+              )}
+              {orphans.length > 0 && (
+                <section>
+                  <div className="mb-1.5 flex items-center gap-2 px-1">
+                    <span className="dot" style={{ background: "var(--muted)", boxShadow: "none" }} />
+                    <span className="text-[13px] font-semibold text-secondary">未分组</span>
+                    <span className="mono-caption text-quaternary">{orphans.length}</span>
+                  </div>
+                  <HostTable hosts={orphans} onlineOf={hostOnline} onConnect={connect} onDetail={openDetail} onEdit={openEditDialog} onTest={testHost} onFavorite={toggleFavorite} onDelete={setDeleteHost} />
                 </section>
               )}
             </div>
@@ -264,7 +519,7 @@ export default function HostsPanel(_props: PanelProps) {
           <EmptyState
             icon={Server}
             title="暂无主机"
-            description="添加你的第一台 SSH 主机，开始管理远程服务器。"
+            description="用顶部快速连接栏输入 root@host:22 立即连接，或添加你的第一台 SSH 主机。"
             action={
               <Button variant="primary" size="md" onClick={openAddDialog}>
                 <Plus /> 添加主机
@@ -274,11 +529,11 @@ export default function HostsPanel(_props: PanelProps) {
         )}
       </div>
 
-      {/* 添加主机 */}
-      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+      {/* 添加 / 编辑主机 */}
+      <Dialog open={addOpen} onOpenChange={(o) => !o && setAddOpen(false)}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>添加主机</DialogTitle>
+            <DialogTitle>{editing ? `编辑主机「${editing.name}」` : "添加主机"}</DialogTitle>
             <DialogDescription>
               通过 SSH 连接远程服务器，支持密码 / 私钥文件 / Keychain 认证。
             </DialogDescription>
@@ -300,7 +555,7 @@ export default function HostsPanel(_props: PanelProps) {
                 id="host-address"
                 value={form.address}
                 onChange={(e) => set("address")(e.target.value)}
-                placeholder="160.202.46.104 或 host.example.com"
+                placeholder="203.0.113.10 或 host.example.com"
               />
             </div>
             <div className="space-y-1.5">
@@ -323,7 +578,7 @@ export default function HostsPanel(_props: PanelProps) {
                 placeholder="root"
               />
             </div>
-            <div className="space-y-1.5">
+            <div className="col-span-2 space-y-1.5">
               <Label>分组</Label>
               <Select value={form.groupId || undefined} onValueChange={set("groupId")}>
                 <SelectTrigger>
@@ -338,69 +593,91 @@ export default function HostsPanel(_props: PanelProps) {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label>认证方式</Label>
-              <Select value={form.auth} onValueChange={set("auth")}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="password">密码</SelectItem>
-                  <SelectItem value="private-key">私钥文件</SelectItem>
-                  <SelectItem value="keychain">Keychain</SelectItem>
-                </SelectContent>
-              </Select>
+
+            {/* 高级选项（认证 / 跳板机）默认折叠 */}
+            <div className="col-span-2">
+              <button
+                type="button"
+                className="flex items-center gap-1 text-[12px] font-medium text-secondary hover:text-foreground"
+                onClick={() => setShowAdvanced((v) => !v)}
+              >
+                {showAdvanced ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                高级选项（认证与跳板机）
+              </button>
             </div>
-            {form.auth === "password" && (
-              <div className="space-y-1.5">
-                <Label htmlFor="host-password">密码（存入 macOS Keychain）</Label>
-                <Input
-                  id="host-password"
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => set("password")(e.target.value)}
-                  placeholder="留空则仅保存主机配置"
-                  autoComplete="new-password"
-                />
-              </div>
+            {showAdvanced && (
+              <>
+                <div className="col-span-2 space-y-1.5">
+                  <Label>认证方式</Label>
+                  <Select value={form.auth} onValueChange={set("auth")}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="password">密码</SelectItem>
+                      <SelectItem value="private-key">私钥文件</SelectItem>
+                      <SelectItem value="keychain">Keychain</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {form.auth === "password" && (
+                  <div className="col-span-2 space-y-1.5">
+                    <Label htmlFor="host-password">
+                      {editing ? "新密码（留空保留原凭据）" : "密码（存入 macOS Keychain）"}
+                    </Label>
+                    <Input
+                      id="host-password"
+                      type="password"
+                      value={form.password}
+                      onChange={(e) => set("password")(e.target.value)}
+                      placeholder="留空则仅保存主机配置"
+                      autoComplete="new-password"
+                    />
+                  </div>
+                )}
+                <div className="col-span-2 space-y-1.5 rounded-md border border-border-subtle bg-hover-fill/50 p-2.5">
+                  <Label htmlFor="host-jump" className="text-[12px]">
+                    跳板机（可选 · ProxyJump）
+                  </Label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="col-span-2 space-y-1">
+                      <Input
+                        id="host-jump"
+                        value={form.jumpHost}
+                        onChange={(e) => set("jumpHost")(e.target.value)}
+                        placeholder="bastion.example.com"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Input
+                        type="number"
+                        min={1}
+                        max={65535}
+                        value={form.jumpPort}
+                        onChange={(e) => set("jumpPort")(e.target.value)}
+                        placeholder="22"
+                      />
+                    </div>
+                  </div>
+                  <Input
+                    value={form.jumpUser}
+                    onChange={(e) => set("jumpUser")(e.target.value)}
+                    placeholder="跳板机用户名（默认同目标用户名）"
+                    className="text-[12px]"
+                  />
+                </div>
+              </>
             )}
-            {/* 跳板机（P2）：目标主机经跳板机转发，无需外部 ssh 二进制 */}
-            <div className="col-span-2 space-y-1.5 rounded-md border border-border-subtle bg-hover-fill/50 p-2.5">
-              <Label htmlFor="host-jump" className="text-[12px]">
-                跳板机（可选 · ProxyJump）
-              </Label>
-              <div className="grid grid-cols-3 gap-2">
-                <div className="col-span-2 space-y-1">
-                  <Input
-                    id="host-jump"
-                    value={form.jumpHost}
-                    onChange={(e) => set("jumpHost")(e.target.value)}
-                    placeholder="bastion.example.com"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Input
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={form.jumpPort}
-                    onChange={(e) => set("jumpPort")(e.target.value)}
-                    placeholder="22"
-                  />
-                </div>
-              </div>
-              <Input
-                value={form.jumpUser}
-                onChange={(e) => set("jumpUser")(e.target.value)}
-                placeholder="跳板机用户名（默认同目标用户名）"
-                className="text-[12px]"
-              />
-              <p className="text-[11px] text-muted">
-                连接时先连跳板机，再经其 direct-tcpip 通道转发到目标主机；跳板认证复用 ssh-agent / 默认密钥。
-              </p>
-            </div>
           </form>
           <DialogFooter>
+            <Button
+              variant="ghost"
+              size="md"
+              onClick={() => void testForm()}
+              disabled={testing || !form.address.trim()}
+            >
+              <Cable /> {testing ? "测试中…" : "测试连接"}
+            </Button>
             <Button variant="secondary" size="md" onClick={() => setAddOpen(false)}>
               取消
             </Button>
@@ -423,7 +700,7 @@ export default function HostsPanel(_props: PanelProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>删除主机</AlertDialogTitle>
             <AlertDialogDescription>
-              确定要删除主机「{deleteHost?.name}」吗？删除后其连接配置将被移除，此操作不可撤销（演示模式）。
+              确定要删除主机「{deleteHost?.name}」吗？删除后其连接配置将被移除，此操作不可撤销。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -437,26 +714,42 @@ export default function HostsPanel(_props: PanelProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Host table (shared by grouped sections)
+// 分组标题
 // ---------------------------------------------------------------------------
+function GroupHeader({ group, count }: { group: { id: string; name: string; env: Env; color: string }; count: number }) {
+  return (
+    <div className="mb-1.5 flex items-center gap-2 px-1">
+      <EnvTag env={group.env} />
+      <span className="text-[13px] font-semibold" style={{ color: group.color }}>
+        {group.name}
+      </span>
+      <span className="mono-caption text-quaternary">{count}</span>
+    </div>
+  );
+}
 
+// ---------------------------------------------------------------------------
+// Host table (shared by grouped / pinned sections)
+// ---------------------------------------------------------------------------
 function HostTable({
   hosts,
   onlineOf,
   onConnect,
   onDetail,
+  onEdit,
+  onTest,
+  onFavorite,
   onDelete,
 }: {
   hosts: Host[];
   onlineOf: Record<string, boolean>;
   onConnect: (host: Host) => void;
   onDetail: (host: Host) => void;
+  onEdit: (host: Host) => void;
+  onTest: (host: Host) => void;
+  onFavorite: (host: Host) => void;
   onDelete: (host: Host) => void;
 }) {
-  const edit = (host: Host) => toast.info(`编辑「${host.name}」（演示模式）`);
-  const test = (host: Host) =>
-    toast.success(`连接测试通过：${host.user}@${host.address}:${host.port}（演示模式）`);
-
   return (
     <div className="overflow-hidden rounded-lg border border-border-subtle bg-surface">
       <Table>
@@ -474,11 +767,7 @@ function HostTable({
           {hosts.map((host) => {
             const online = onlineOf[host.id] ?? true; // mock 默认在线
             return (
-              <TableRow
-                key={host.id}
-                onDoubleClick={() => onConnect(host)}
-                title="双击连接 SSH"
-              >
+              <TableRow key={host.id} onDoubleClick={() => onConnect(host)} title="双击连接 SSH">
                 <TableCell
                   className="env-rail"
                   style={{ "--rail-color": envColor(host.env) } as CSSProperties}
@@ -487,6 +776,9 @@ function HostTable({
                     <span className={cn("dot", online ? "bg-success" : "bg-quaternary")} />
                     <span className="truncate font-medium text-foreground">{host.name}</span>
                     <EnvTag env={host.env} />
+                    {host.favorite && (
+                      <Star className="h-3 w-3 shrink-0 fill-warning text-warning" />
+                    )}
                   </div>
                 </TableCell>
                 <TableCell>
@@ -516,6 +808,14 @@ function HostTable({
                     <Button
                       variant="ghost"
                       size="icon-sm"
+                      title={host.favorite ? "取消收藏" : "收藏"}
+                      onClick={() => onFavorite(host)}
+                    >
+                      <Star className={cn("h-3.5 w-3.5", host.favorite ? "fill-warning text-warning" : "text-muted")} />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
                       title={`连接 ${host.name}`}
                       onClick={() => onConnect(host)}
                     >
@@ -538,11 +838,15 @@ function HostTable({
                       <DropdownMenuContent align="end">
                         <DropdownMenuLabel>{host.name}</DropdownMenuLabel>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={() => edit(host)}>
+                        <DropdownMenuItem onClick={() => onEdit(host)}>
                           <Pencil /> 编辑
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => test(host)}>
+                        <DropdownMenuItem onClick={() => onTest(host)}>
                           <Cable /> 测试连接
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onFavorite(host)}>
+                          <Star className={cn(host.favorite && "fill-warning text-warning")} />
+                          {host.favorite ? "取消收藏" : "加入收藏"}
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem className="text-danger" onClick={() => onDelete(host)}>

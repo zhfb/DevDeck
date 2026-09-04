@@ -3,6 +3,7 @@ import { KeyRound, Loader2, ShieldCheck } from "lucide-react";
 import { useConnect } from "@/stores/live";
 import { invoke, isTauri, onEvent } from "@/lib/api";
 import { useHosts } from "@/lib/queries";
+import { useQueryClient } from "@tanstack/react-query";
 import { useWorkspace as useWs } from "@/stores/workspace";
 import { toast } from "@/components/ui/sonner";
 import { Button } from "@/components/ui/button";
@@ -38,14 +39,18 @@ interface TotpPrompt {
 export function ConnectionDialog() {
   const { connectTarget, closeConnect } = useConnect();
   const { data: hosts } = useHosts();
+  const queryClient = useQueryClient();
   const openTab = useWs((s) => s.openTab);
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
+  const [saveHost, setSaveHost] = useState(true);
   const [connecting, setConnecting] = useState(false);
   const [totp, setTotp] = useState<TotpPrompt | null>(null);
   const [totpCode, setTotpCode] = useState("");
   const totpRef = useRef<TotpPrompt | null>(null);
   const timerRef = useRef<number | null>(null);
+  /** adhoc 会话建立后回填真实 hostId，用于收敛 TOTP 事件匹配 */
+  const adhocHostIdRef = useRef<string | null>(null);
 
   const setTotpState = (p: TotpPrompt | null) => {
     totpRef.current = p;
@@ -58,18 +63,24 @@ export function ConnectionDialog() {
   // 订阅后端键盘交互（TOTP）请求
   useEffect(() => {
     if (!isTauri || !connectTarget) return;
+    adhocHostIdRef.current = null;
     let un: (() => void) | null = null;
     onEvent<TotpPrompt>("ssh:auth-request", (p) => {
-      if (p?.hostId === connectTarget.hostId) {
-        setTotpState(p);
-        setTotpCode("");
-        // TOTP 待输入时放宽连接超时（后端本身有 120s 等待上限）
-        if (timerRef.current) window.clearTimeout(timerRef.current);
-        timerRef.current = window.setTimeout(() => {
-          toast.error("二次验证超时（150 秒），请重新连接");
-          setTotpState(null);
-        }, 150000);
+      if (connectTarget?.adhoc) {
+        // 连接建立前无法预知临时会话的 hostId，只能按「对话框模态 = 唯一在途连接」放行；
+        // 建立后收敛为按真实 hostId 匹配，避免串扰其他会话的 TOTP 请求。
+        if (adhocHostIdRef.current && p?.hostId !== adhocHostIdRef.current) return;
+      } else if (p?.hostId !== connectTarget.hostId) {
+        return;
       }
+      setTotpState(p);
+      setTotpCode("");
+      // TOTP 待输入时放宽连接超时（后端本身有 120s 等待上限）
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => {
+        toast.error("二次验证超时（150 秒），请重新连接");
+        setTotpState(null);
+      }, 150000);
     }).then((u) => {
       un = u;
     });
@@ -90,14 +101,27 @@ export function ConnectionDialog() {
     setConnecting(true);
     try {
       if (isTauri) {
-        const invokePromise = invoke<{ sessionId: string; title: string }>("ssh_connect", {
-          hostId: connectTarget.hostId,
-          password: password || null,
-          cols: 100,
-          rows: 30,
-        });
+        const adhoc = !!connectTarget.adhoc;
+        const invokePromise = invoke<{ sessionId: string; title: string; hostId?: string }>(
+          adhoc ? "ssh_connect_adhoc" : "ssh_connect",
+          adhoc
+            ? {
+                address: connectTarget.address,
+                user: connectTarget.user,
+                port: connectTarget.port ?? 22,
+                password: password || null,
+                cols: 100,
+                rows: 30,
+              }
+            : {
+                hostId: connectTarget.hostId,
+                password: password || null,
+                cols: 100,
+                rows: 30,
+              }
+        );
         // UI 超时安全网：无 TOTP 时 15s；有 TOTP 待输入时放宽到 150s
-        let session: { sessionId: string; title: string };
+        let session: { sessionId: string; title: string; hostId?: string };
         try {
           session = await Promise.race([
             invokePromise,
@@ -124,10 +148,38 @@ export function ConnectionDialog() {
             .catch(() => {});
           throw e;
         }
+        // 快速连接：连接成功后「顺手保存为主机」（持久化到 SQLite + Keychain）
+        if (adhoc && saveHost) {
+          const hostId = `h-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+          await invoke("hosts_save", {
+            host: {
+              id: hostId,
+              name: connectTarget.hostName || connectTarget.address,
+              address: connectTarget.address,
+              port: connectTarget.port ?? 22,
+              user: connectTarget.user,
+              groupId: "g-dev",
+              env: "dev",
+              credentialRef: null,
+              fingerprint: null,
+              lastConnectedAt: new Date().toISOString(),
+              jumpHost: null,
+              jumpPort: null,
+              jumpUser: null,
+              favorite: false,
+              createdAt: new Date().toISOString(),
+            },
+            password: password || null,
+          });
+          queryClient.invalidateQueries({ queryKey: ["hosts"] });
+          toast.success(`已保存主机「${connectTarget.hostName || connectTarget.address}」`);
+        }
+        // adhoc 会话建立后回填真实 hostId，供 TOTP 事件按会话收敛匹配
+        if (adhoc) adhocHostIdRef.current = session.hostId ?? null;
         openTab({
           kind: "ssh",
           title: session.title || connectTarget.hostName,
-          hostId: connectTarget.hostId,
+          hostId: session.hostId ?? connectTarget.hostId,
           sessionId: session.sessionId,
           env: host?.env ?? "none",
         });
@@ -138,7 +190,7 @@ export function ConnectionDialog() {
         openTab({
           kind: "ssh",
           title: connectTarget.hostName,
-          hostId: connectTarget.hostId,
+          hostId: connectTarget.adhoc ? "adhoc-mock" : connectTarget.hostId,
           env: host?.env ?? "none",
         });
         toast.success(`已连接 ${connectTarget.hostName}（演示）`);
@@ -252,6 +304,18 @@ export function ConnectionDialog() {
               </div>
               <Switch checked={remember} onCheckedChange={setRemember} />
             </div>
+            {connectTarget?.adhoc && (
+              <div className="flex items-center justify-between rounded-md border border-border-subtle bg-hover-fill px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="h-3.5 w-3.5 text-success" />
+                  <div className="flex flex-col">
+                    <span className="text-[12px] font-medium text-foreground">保存此主机</span>
+                    <span className="text-[11px] text-muted">连接成功后加入主机列表（凭据存入 Keychain）</span>
+                  </div>
+                </div>
+                <Switch checked={saveHost} onCheckedChange={setSaveHost} />
+              </div>
+            )}
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={closeConnect} disabled={connecting}>
                 取消

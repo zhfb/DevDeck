@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { X, PanelRight, Columns2, Rows2, Loader2 } from "lucide-react";
+import { X, PanelRight, Columns2, Rows2, Loader2, Server, Boxes, Waypoints, Terminal, Plus } from "lucide-react";
 import { useWorkspace } from "@/stores/workspace";
 import { cn } from "@/lib/utils";
 import iconApp from "@/assets/icon-app.png";
 import { TerminalView } from "./panels/TerminalView";
+import { Input } from "@/components/ui/input";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import type { WorkspaceTab } from "@/stores/workspace";
@@ -17,7 +18,15 @@ export function TabCanvas({
 }: {
   onOpenPanel: (p: string) => void;
 }) {
-  const { tabs, activeTabId, closeTab, setActiveTab, splitActive } = useWorkspace();
+  const { tabs, activeTabId, closeTab, setActiveTab, splitActive, renameTab } = useWorkspace();
+  const openLocalTerminal = useWorkspace((s) => s.openLocalTerminal);
+  const [editingTabId, setEditingTabId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+
+  const commitRename = (id: string) => {
+    renameTab(id, editValue);
+    setEditingTabId(null);
+  };
 
   if (tabs.length === 0) {
     return <WelcomeScreen onOpenPanel={onOpenPanel} />;
@@ -27,8 +36,8 @@ export function TabCanvas({
 
   return (
     <main className="flex min-w-0 flex-1 flex-col bg-background">
-      {/* Tab strip */}
-      <div className="flex h-8 shrink-0 items-end gap-0 border-b border-border-subtle bg-panel pl-1.5">
+      {/* Tab strip — macOS material, active tab merges with content below */}
+      <div className="chrome-material flex h-8 shrink-0 items-end gap-0 border-b border-border-subtle pl-1.5">
         {tabs.map((t) => (
           <div
             key={t.id}
@@ -36,11 +45,38 @@ export function TabCanvas({
             className={cn(
               "group flex h-7 max-w-[200px] cursor-default items-center gap-1.5 rounded-t-md border border-b-0 px-2.5 text-[12px] transition-colors",
               t.id === active?.id
-                ? "border-border bg-background text-foreground"
+                ? "border-border bg-background text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
                 : "border-transparent text-secondary hover:bg-hover-fill"
             )}
           >
-            <span className={cn("truncate", t.activity && "text-accent")}>{t.title}</span>
+            {editingTabId === t.id ? (
+              <Input
+                autoFocus
+                value={editValue}
+                onChange={(e) => setEditValue(e.target.value)}
+                onFocus={(e) => e.target.select()}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === "Enter") commitRename(t.id);
+                  if (e.key === "Escape") setEditingTabId(null);
+                }}
+                onBlur={() => commitRename(t.id)}
+                className="h-5 w-28 px-1.5 text-[12px]"
+              />
+            ) : (
+              <span
+                className={cn("truncate", t.activity && "text-accent")}
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  setEditValue(t.title);
+                  setEditingTabId(t.id);
+                }}
+                title="双击重命名"
+              >
+                {t.title}
+              </span>
+            )}
             {t.subtitle && <span className="mono-caption hidden truncate text-quaternary">{t.subtitle}</span>}
             <button
               onClick={(e) => {
@@ -54,6 +90,14 @@ export function TabCanvas({
           </div>
         ))}
         <div className="mb-1.5 ml-auto mr-2 flex items-center gap-0.5">
+          <button
+            onClick={() => void openLocalTerminal().catch((e) => toast.error("打开本地终端失败", { description: String(e) }))}
+            title="新建终端（Cmd+T）"
+            className="flex h-5 items-center gap-0.5 rounded px-1.5 text-[11px] text-secondary hover:bg-hover-fill"
+          >
+            <Plus className="h-3 w-3" />
+            终端
+          </button>
           {active?.kind === "ssh" && (
             <SplitButton tab={active} />
           )}
@@ -251,10 +295,10 @@ function LazyPanel({ panel, onOpenPanel }: { panel: string; onOpenPanel: (p: str
 function WelcomeScreen({ onOpenPanel }: { onOpenPanel: (p: string) => void }) {
   const openLocalTerminal = useWorkspace((s) => s.openLocalTerminal);
   const quick = [
-    { id: "hosts", label: "SSH 主机", desc: "管理连接与分组", icon: "🖥" },
-    { id: "containers", label: "容器", desc: "本地 + 远程 Docker", icon: "📦" },
-    { id: "tunnels", label: "隧道", desc: "端口转发", icon: "🔀" },
-    { id: "local-terminal", label: "本地终端", desc: "macOS shell", icon: "⌘" },
+    { id: "hosts", label: "SSH 主机", desc: "管理连接与分组", icon: Server, tint: "text-accent bg-accent-tint" },
+    { id: "containers", label: "容器", desc: "本地 + 远程 Docker", icon: Boxes, tint: "text-success bg-success-tint" },
+    { id: "tunnels", label: "隧道", desc: "端口转发", icon: Waypoints, tint: "text-warning bg-warning-tint" },
+    { id: "local-terminal", label: "本地终端", desc: "macOS shell", icon: Terminal, tint: "text-primary bg-accent-tint" },
   ];
   return (
     <div className="grid h-full w-full place-items-center bg-background">
@@ -263,32 +307,37 @@ function WelcomeScreen({ onOpenPanel }: { onOpenPanel: (p: string) => void }) {
         <img
           src={iconApp}
           alt="DevDeck"
-          className="h-14 w-14 rounded-2xl shadow-[inset_0_-2px_0_rgba(0,0,0,0.25)]"
+          className="h-14 w-14 rounded-2xl shadow-[inset_0_-2px_0_rgba(0,0,0,0.3)]"
           draggable={false}
         />
         <div className="text-[17px] font-semibold tracking-tight">DevDeck</div>
         <div className="text-[12.5px] text-muted">SSH · SFTP · Docker · 隧道 — macOS 原生工作台</div>
       </div>
       <div className="grid grid-cols-2 gap-2.5">
-        {quick.map((q) => (
-          <button
-            key={q.id}
-            onClick={() =>
-              q.id === "local-terminal"
-                ? void openLocalTerminal().catch((e) =>
-                    toast.error("打开本地终端失败", { description: String(e) })
-                  )
-                : onOpenPanel(q.id)
-            }
-            className="flex w-52 items-center gap-3 rounded-lg border border-border bg-surface p-3 text-left transition-colors hover:border-accent/40 hover:bg-active-fill"
-          >
-            <span className="text-[16px]">{q.icon}</span>
-            <span className="flex flex-col">
-              <span className="text-[13px] font-medium text-foreground">{q.label}</span>
-              <span className="text-[11.5px] text-muted">{q.desc}</span>
-            </span>
-          </button>
-        ))}
+        {quick.map((q) => {
+          const Icon = q.icon;
+          return (
+            <button
+              key={q.id}
+              onClick={() =>
+                q.id === "local-terminal"
+                  ? void openLocalTerminal().catch((e) =>
+                      toast.error("打开本地终端失败", { description: String(e) })
+                    )
+                  : onOpenPanel(q.id)
+              }
+              className="group flex w-52 items-center gap-3 rounded-xl border border-border bg-surface p-3 text-left transition-all hover:border-accent/40 hover:bg-active-fill"
+            >
+              <span className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg", q.tint)}>
+                <Icon className="h-4 w-4" strokeWidth={2} />
+              </span>
+              <span className="flex flex-col">
+                <span className="text-[13px] font-medium text-foreground">{q.label}</span>
+                <span className="text-[11.5px] text-muted">{q.desc}</span>
+              </span>
+            </button>
+          );
+        })}
       </div>
       <div className="flex items-center gap-3 text-[11px] text-quaternary">
         <span>Cmd+K 命令面板</span>

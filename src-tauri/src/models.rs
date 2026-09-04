@@ -154,6 +154,9 @@ pub struct Host {
     pub jump_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jump_user: Option<String>,
+    /// 收藏置顶（前端星标）
+    #[serde(default)]
+    pub favorite: bool,
     pub created_at: String,
 }
 

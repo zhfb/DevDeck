@@ -218,10 +218,30 @@ pub fn run() {
                 tracing::warn!("tray init failed: {e}");
             }
 
+            // 原生 vibrancy（真毛玻璃）—— 默认深色 HudWindow 材质；
+            // 前端切主题时经 window_set_vibrancy 命令更新。
+            #[cfg(target_os = "macos")]
+            {
+                use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(e) = apply_vibrancy(
+                        &window,
+                        NSVisualEffectMaterial::HudWindow,
+                        Some(NSVisualEffectState::Active),
+                        Some(0.0),
+                    ) {
+                        tracing::warn!("vibrancy apply failed: {e}");
+                    } else {
+                        tracing::info!("devdeck: native vibrancy applied (HudWindow)");
+                    }
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            window_set_vibrancy,
             power_state_get,
             power_state_set,
             updater_check,
@@ -290,6 +310,7 @@ pub fn run() {
             tunnels_start,
             tunnels_stop,
             ssh_connect,
+            ssh_connect_adhoc,
             ssh_reconnect,
             ssh_disconnect,
             ssh_sessions,

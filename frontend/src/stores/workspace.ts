@@ -47,6 +47,8 @@ interface WorkspaceState {
   openTab: (tab: Omit<WorkspaceTab, "id" | "panes"> & { panes?: WorkspaceTab["panes"] }) => string;
   closeTab: (id: string) => void;
   setActiveTab: (id: string) => void;
+  /** 重命名 Tab 标题（仅 UI，不持久化） */
+  renameTab: (id: string, title: string) => void;
   setActivity: (id: string, active: boolean) => void;
   toggleSidebar: () => void;
   setBottomPanel: (p: Partial<WorkspaceState["bottomPanel"]>) => void;
@@ -157,6 +159,14 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
 
   setActiveTab(id) {
     set({ activeTabId: id });
+  },
+
+  renameTab(id, title) {
+    const clean = title.trim();
+    if (!clean) return;
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.id === id ? { ...t, title: clean } : t)),
+    }));
   },
 
   setActivity(id, activity) {
@@ -279,6 +289,9 @@ export const useUi = create<UiState>((set, get) => ({
   setTheme(theme) {
     document.documentElement.dataset.theme = theme;
     set({ theme });
+    // 同步 macOS 原生 vibrancy 材质（深色 HudWindow / 浅色 UnderWindowBackground）；
+    // 浏览器 mock 模式下无副作用。
+    void invoke("window_set_vibrancy", { dark: theme === "dark" }).catch(() => {});
   },
   toggleTheme() {
     get().setTheme(get().theme === "dark" ? "light" : "dark");

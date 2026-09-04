@@ -14,14 +14,17 @@ import {
   Boxes,
   FolderKanban,
   CircleOff,
+  Star,
 } from "lucide-react";
 import { useEngines, useHosts, useHostGroups, useTunnels, useContainers } from "@/lib/queries";
+import { useQueryClient } from "@tanstack/react-query";
 import { useWorkspace } from "@/stores/workspace";
 import { useLive, useConnect } from "@/stores/live";
-import { isTauri } from "@/lib/api";
+import { invoke, isTauri } from "@/lib/api";
 import type { Host } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { EngineBadge, EnvTag } from "@/components/shared";
+import { toast } from "@/components/ui/sonner";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuLabel, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import type { NavPanelId } from "./NavRail";
 
@@ -88,6 +91,7 @@ export function ResourceTree({
   const { data: containers } = useContainers();
   const { hostOnline, sessions } = useLive();
   const openConnect = useConnect((s) => s.openConnect);
+  const queryClient = useQueryClient();
   const { openTab, setActiveTab } = useWorkspace();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     "engine-local": true,
@@ -98,7 +102,17 @@ export function ResourceTree({
   const toggle = (key: string) => setExpanded((e) => ({ ...e, [key]: !e[key] }));
 
   const connectHost = (host: Host) => {
-    openConnect({ hostId: host.id, hostName: host.name, address: host.address, user: host.user });
+    openConnect({ hostId: host.id, hostName: host.name, address: host.address, user: host.user, port: host.port });
+  };
+
+  const toggleFavorite = async (host: Host) => {
+    try {
+      await invoke("hosts_save", { host: { ...host, favorite: !host.favorite }, password: null });
+      await queryClient.invalidateQueries({ queryKey: ["hosts"] });
+      toast.success(!host.favorite ? `已将「${host.name}」加入收藏` : `已取消收藏「${host.name}」`);
+    } catch {
+      toast.error("更新收藏失败");
+    }
   };
 
   const openHostDetail = (hostId: string, title: string) => {
@@ -114,7 +128,7 @@ export function ResourceTree({
   const runningCount = containers?.filter((c) => c.state === "running").length ?? 0;
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-border-subtle bg-panel">
+    <aside className="chrome-material flex w-60 shrink-0 flex-col border-r border-border-subtle">
       <div className="flex items-center gap-1 border-b border-border-subtle p-1.5">
         <button
           onClick={() => onOpenPanel("dashboard")}
@@ -245,6 +259,25 @@ export function ResourceTree({
                               title={online ? "在线" : "离线"}
                             />
                             <span className="flex-1 truncate">{h.name}</span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void toggleFavorite(h);
+                              }}
+                              className={cn(
+                                "shrink-0 p-0.5 transition-opacity",
+                                h.favorite ? "opacity-100" : "opacity-0 hover:opacity-100"
+                              )}
+                              title={h.favorite ? "取消收藏" : "收藏"}
+                            >
+                              <Star
+                                className={cn(
+                                  "h-3 w-3",
+                                  h.favorite ? "fill-warning text-warning" : "text-muted"
+                                )}
+                              />
+                            </button>
                             {activeSession && <Terminal className="h-3 w-3 text-accent" />}
                             <EnvTag env={h.env} />
                           </TreeNode>
@@ -256,10 +289,13 @@ export function ResourceTree({
                             <Terminal /> 连接 SSH
                           </ContextMenuItem>
                           <ContextMenuItem onSelect={() => openHostDetail(h.id, h.name)}>主机详情</ContextMenuItem>
-                          <ContextMenuItem onSelect={() => onOpenPanel("containers")}>展开容器</ContextMenuItem>
+                          <ContextMenuItem onSelect={() => toggleFavorite(h)}>
+                            <Star className={cn("h-3.5 w-3.5", h.favorite && "fill-warning text-warning")} />
+                            {h.favorite ? "取消收藏" : "加入收藏"}
+                          </ContextMenuItem>
                           <ContextMenuSeparator />
-                          <ContextMenuItem>编辑</ContextMenuItem>
-                          <ContextMenuItem className="text-danger">删除</ContextMenuItem>
+                          <ContextMenuItem onSelect={() => onOpenPanel("hosts")}>管理面板</ContextMenuItem>
+                          <ContextMenuItem className="text-danger" onSelect={() => onOpenPanel("hosts")}>删除（面板）</ContextMenuItem>
                         </ContextMenuContent>
                       </ContextMenu>
                     );

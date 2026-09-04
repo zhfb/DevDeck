@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tokio::sync::Mutex;
 
 /// PIN 暴力破解防护：连续失败达到阈值后进入冷却期
@@ -121,6 +121,28 @@ pub async fn app_info() -> CmdResult<AppInfo> {
         backend: "tauri-rust".to_string(),
         platform: std::env::consts::OS.to_string(),
     })
+}
+
+/// 切换窗口原生 vibrancy 材质（深色/浅色）。前端主题切换时调用；
+/// 非 macOS 平台为无操作。
+#[tauri::command]
+pub fn window_set_vibrancy(app: AppHandle, dark: bool) -> CmdResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+        if let Some(window) = app.get_webview_window("main") {
+            let material = if dark {
+                NSVisualEffectMaterial::HudWindow
+            } else {
+                NSVisualEffectMaterial::UnderWindowBackground
+            };
+            apply_vibrancy(&window, material, Some(NSVisualEffectState::Active), Some(0.0))
+                .map_err(|e| format!("apply_vibrancy failed: {e}"))?;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, dark);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1199,6 +1221,44 @@ pub async fn ssh_connect(
     if let Ok(db) = state.db.try_lock() {
         let _ = db.touch_host(&host_id, &session.started_at);
     }
+    Ok(session)
+}
+
+/// 快速连接未保存主机（Quick Connect）：
+/// 以 address/user/port 直接构建内存 Host 发起连接，不写入 DB。
+/// 密码/私钥仍可走 Keychain 或本次传入；连接后可再「保存为主机」。
+#[tauri::command]
+pub async fn ssh_connect_adhoc(
+    state: State<'_, AppState>,
+    address: String,
+    user: String,
+    port: Option<u16>,
+    password: Option<String>,
+    cols: Option<u32>,
+    rows: Option<u32>,
+) -> CmdResult<SshSession> {
+    let host = Host {
+        id: format!("adhoc-{}", uuid::Uuid::new_v4().simple()),
+        name: format!("{user}@{address}"),
+        address,
+        port: port.unwrap_or(22),
+        user,
+        group_id: String::new(),
+        env: "none".to_string(),
+        credential_ref: None,
+        fingerprint: None,
+        last_connected_at: None,
+        jump_host: None,
+        jump_port: None,
+        jump_user: None,
+        favorite: false,
+        created_at: crate::models::now_iso(),
+    };
+    let session = state
+        .ssh
+        .connect_pty(&host, password.as_deref(), cols.unwrap_or(80), rows.unwrap_or(24))
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(session)
 }
 

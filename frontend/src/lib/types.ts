@@ -30,6 +30,8 @@ export interface Host {
   jumpHost?: string;
   jumpPort?: number;
   jumpUser?: string;
+  /** 收藏置顶（前端星标），持久化到 SQLite */
+  favorite?: boolean;
   createdAt: string;
 }
 
