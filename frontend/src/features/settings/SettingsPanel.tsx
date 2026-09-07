@@ -208,8 +208,12 @@ export default function SettingsPanel(_props: PanelProps) {
       toast.error("请填写 Base URL 与模型");
       return;
     }
-    saveAiConfig({ baseUrl: aiBaseUrl.trim(), apiKey: aiApiKey.trim(), model: aiModel.trim() });
-    toast.success("AI 配置已保存（仅本机 localStorage）");
+    try {
+      saveAiConfig({ baseUrl: aiBaseUrl.trim(), apiKey: aiApiKey.trim(), model: aiModel.trim() });
+      toast.success("AI 配置已保存（仅本机 localStorage）");
+    } catch (e) {
+      toast.error("保存失败", { description: String(e) });
+    }
   };
 
   const testAi = async () => {
@@ -217,7 +221,12 @@ export default function SettingsPanel(_props: PanelProps) {
       toast.error("请先填写 Base URL 与模型");
       return;
     }
-    saveAiConfig({ baseUrl: aiBaseUrl.trim(), apiKey: aiApiKey.trim(), model: aiModel.trim() });
+    try {
+      saveAiConfig({ baseUrl: aiBaseUrl.trim(), apiKey: aiApiKey.trim(), model: aiModel.trim() });
+    } catch (e) {
+      toast.error("保存配置失败", { description: String(e) });
+      return;
+    }
     setAiTesting(true);
     try {
       const reply = await aiChat([{ role: "user", content: "只回复：ok" }], { maxTokens: 16 });

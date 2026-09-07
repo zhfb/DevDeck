@@ -25,7 +25,11 @@ export function getAiConfig(): AiConfig | null {
 }
 
 export function saveAiConfig(cfg: AiConfig): void {
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
+  try {
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
+  } catch {
+    throw new Error("无法保存 AI 配置：本地存储不可用（隐私模式或磁盘已满）");
+  }
 }
 
 export function isAiConfigured(): boolean {
@@ -35,35 +39,50 @@ export function isAiConfigured(): boolean {
 export type AiMessage = { role: "system" | "user" | "assistant"; content: string };
 
 /** 调用 OpenAI 兼容 /chat/completions，返回助手文本。失败抛出可读错误。 */
-export async function aiChat(messages: AiMessage[], opts?: { maxTokens?: number }): Promise<string> {
+export async function aiChat(
+  messages: AiMessage[],
+  opts?: { maxTokens?: number; timeoutMs?: number }
+): Promise<string> {
   const cfg = getAiConfig();
   if (!cfg) {
     throw new Error("AI 未配置：请到 设置 → AI 助手 填写 Base URL / API Key / 模型");
   }
   const base = cfg.baseUrl.replace(/\/+$/, "");
-  const resp = await fetch(`${base}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}),
-    },
-    body: JSON.stringify({
-      model: cfg.model,
-      messages,
-      temperature: 0.2,
-      max_tokens: opts?.maxTokens ?? 1024,
-    }),
-  });
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => "");
-    throw new Error(`AI 请求失败（${resp.status}）：${body.slice(0, 200)}`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts?.timeoutMs ?? 30000);
+  try {
+    const resp = await fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: cfg.model,
+        messages,
+        temperature: 0.2,
+        max_tokens: opts?.maxTokens ?? 1024,
+      }),
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      throw new Error(`AI 请求失败（${resp.status}）：${body.slice(0, 200)}`);
+    }
+    const data = await resp.json().catch(() => null);
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content !== "string" || content.length === 0) {
+      throw new Error("AI 返回为空，请重试或更换模型");
+    }
+    return content.trim();
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") {
+      throw new Error("AI 请求超时（30s），请检查网络或网关后重试");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  const data = await resp.json().catch(() => null);
-  const content = data?.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || content.length === 0) {
-    throw new Error("AI 返回为空，请重试或更换模型");
-  }
-  return content.trim();
 }
 
 /** 从 AI 文本中尽力提取 JSON（容错：去掉 ```json 围栏与前后杂讯）。 */

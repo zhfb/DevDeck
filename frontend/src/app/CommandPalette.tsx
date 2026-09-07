@@ -297,7 +297,14 @@ export function CommandPalette({ onOpenPanel }: { onOpenPanel: (p: NavPanelId) =
               value={query}
               onValueChange={setQuery}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && aiMode && aiInstruction) {
+                // AI 结果出现后放行 Enter 给 cmdk 执行选中项；
+                // 仅在尚未请求 / 加载中 / 无结果时拦截 Enter 发起新请求
+                if (
+                  e.key === "Enter" &&
+                  aiMode &&
+                  aiInstruction &&
+                  (!aiAsked || aiLoading || aiResults.length === 0)
+                ) {
                   e.preventDefault();
                   void runAi(aiInstruction);
                 }
