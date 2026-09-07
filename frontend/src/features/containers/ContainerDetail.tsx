@@ -97,7 +97,7 @@ export default function ContainerDetail({
       return;
     }
     // 真机下日志为空时绝不回退 mock 示例日志，避免把伪造数据当真分析
-    if (isTauri() && liveLogs.length === 0) {
+    if (isTauri && liveLogs.length === 0) {
       setAiAnalysisError("暂无日志可分析：容器还没有输出，请稍候再试");
       setAiAnalysis(null);
       return;
