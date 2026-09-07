@@ -19,7 +19,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
         working-directory: frontend
       - name: Import signing certificate
-        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
+        if: ${{ env.APPLE_CERTIFICATE != '' }}
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -48,7 +48,7 @@ jobs:
             cargo tauri build --bundles app,dmg
           fi
       - name: Notarize (Apple notary service) + staple
-        if: ${{ secrets.APPLE_ID != '' || secrets.APPLE_API_KEY != '' }}
+        if: ${{ env.APPLE_ID != '' || env.APPLE_API_KEY != '' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -73,7 +73,7 @@ jobs:
           xcrun stapler staple "$DMG"
           if [ -n "$APP" ]; then xcrun stapler staple "$APP"; fi
       - name: Sign artifacts + generate updater feed
-        if: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        if: ${{ env.TAURI_SIGNING_PRIVATE_KEY != '' }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
