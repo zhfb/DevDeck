@@ -86,24 +86,15 @@ jobs:
           tauri signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" \
             -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" "$DMG"
           SIG=$(cat "$DMG.sig")
-          python3 - <<'PY'
-import json, os, time
-sig = open(os.environ['DMG'] + '.sig').read()
-version = os.environ['VERSION']
-url = f"https://github.com/zhfb/DevDeck/releases/download/v{version}/" + os.path.basename(os.environ['DMG'])
-feed = {
-  "version": version,
-  "notes": "DevDeck release",
-  "pub_date": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-  "platforms": {
-    "x86_64-apple-darwin": {"signature": sig, "url": url}
-  }
-}
-os.makedirs('feed', exist_ok=True)
-with open('feed/latest-x86_64-apple-darwin.json', 'w') as f:
-    json.dump(feed, f, indent=2)
-print("feed written:", feed['platforms'])
-PY
+          mkdir -p feed
+          jq -n \
+            --arg version "$VERSION" \
+            --arg sig "$SIG" \
+            --arg url "https://github.com/zhfb/DevDeck/releases/download/v${VERSION}/$(basename "$DMG")" \
+            --arg pub_date "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            '{version: $version, notes: "DevDeck release", pub_date: $pub_date, platforms: {"x86_64-apple-darwin": {signature: $sig, url: $url}}}' \
+            > feed/latest-x86_64-apple-darwin.json
+          cat feed/latest-x86_64-apple-darwin.json
           cp "$DMG.sig" feed/
       - uses: actions/upload-artifact@v4
         with:
