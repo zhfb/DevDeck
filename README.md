@@ -38,9 +38,9 @@ DevDeck 是一个基于 **Tauri v2 + Rust** 构建的 macOS 原生高效远程�
 
 * Docker / Podman 引擎探测（OrbStack / Docker Desktop / Colima / Podman / 内置）、容器生命周期与批量操作、一键 Exec 终端、镜像拉取进度、运行新容器表单、卷 / 网络管理
 
-* 私有镜像仓库配置（Basic Auth / Bearer Token，凭据仅存 Keychain）、远程 Docker over SSH、Compose（up /down/logs /build/restart /pull）、卷挂载反查
+* 私有镜像仓库配置（Basic Auth / Bearer Token，凭据仅存 Keychain）、远程 Docker over SSH、Compose（up / down / logs / build / restart / pull）、卷挂载反查
 
-* 事件驱动端口转发（容器启动自动暴露 [localhost](https://localhost) 隧道）+ Docker `/events` 自愈转发
+* 事件驱动端口转发（容器启动自动暴露 localhost 隧道）+ Docker `/events` 自愈转发
 
 **网络与隧道**
 
@@ -138,15 +138,15 @@ flowchart TB
 
 
 ```
-\# 前置：Node.js ≥ 18、pnpm、Rust toolchain；内置引擎可选 brew install lima
+# 前置：Node.js ≥ 18、pnpm、Rust toolchain；内置引擎可选 brew install lima
 
-\# 前端开发（浏览器模式，mock 数据可预览全部面板，无需 Rust）
+# 前端开发（浏览器模式，mock 数据可预览全部面板，无需 Rust）
 
 cd frontend && pnpm install && pnpm dev
 
-\# 桌面应用开发（Tauri，含 Rust 热重载）
+# 桌面应用开发（Tauri，含 Rust 热重载；需在项目根目录调用）
 
-cd frontend && pnpm tauri dev
+./frontend/node_modules/.bin/tauri dev
 ```
 
 
@@ -214,11 +214,11 @@ DevDeck/
 
 
 ```
-\# 后端：单测 + clippy（零告警）
+# 后端：单测 + clippy（零告警）
 
 cd src-tauri && cargo test && cargo clippy --all-targets
 
-\# 前端：单测 + 类型检查 + 构建
+# 前端：单测 + 类型检查 + 构建
 
 cd frontend && pnpm test          # vitest run
 
