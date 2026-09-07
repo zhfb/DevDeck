@@ -169,6 +169,8 @@ DevDeck is a macOS-native developer workbench: SSH terminals, SFTP file manageme
 
 **Native vibrancy (Tauri desktop).** When running as the macOS app, the window is `transparent: true` (`macOSPrivateApi: true` + `macos-private-api` cargo feature) and a real `NSVisualEffectView` is applied via `window-vibrancy` — `HudWindow` in dark, `UnderWindowBackground` in light (switched by the `window_set_vibrancy` command on theme change). In this mode `html[data-tauri]` makes the webview background transparent so the frosted desktop shows through the chrome materials; the content column stays opaque `--background` for readability. The CSS gradient + backdrop-filter remain as the browser-preview fallback.
 
+**Chrome underlay in native mode.** Native vibrancy is semi-transparent and lets whatever sits behind the window bleed through — a light desktop wallpaper or a light window behind DevDeck turns the chrome grey. So under `html[data-tauri]` the chrome materials get a more opaque underlay: dark theme `rgba(17,19,24,.9)` / `-strong .94` / `-tint .8`, light theme white `rgba(255,255,255,.88)` / `.92` / `.8`. A little blur remains so the frosted-glass feel survives, but the sidebar/tab rail stay stably dark (or stably light) regardless of what's behind the window.
+
 The dominant surface archetype is **Operate** (taking action on containers/hosts/tunnels) with **Monitor** moments (stats, logs, events). Composition favors dense tables, glanceable status, and keyboard-first interaction (Cmd+K command palette, tab-driven workspace).
 
 ## Colors
