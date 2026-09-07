@@ -51,7 +51,7 @@ objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
 # 真原生毛玻璃：NSVisualEffectView vibrancy（桌面壁纸透过 chrome 材质）
-window-vibrancy = "0.7"
+window-vibrancy = "0.6"
 
 [profile.release]
 codegen-units = 1
