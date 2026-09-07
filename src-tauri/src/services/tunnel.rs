@@ -84,6 +84,10 @@ impl TunnelManager {
             .find(|t| t.id == id)
             .ok_or_else(|| TunnelError::NotFound(id.to_string()))?
         };
+        // 若该隧道已有运行中的任务，先终止旧的，避免重复监听端口
+        if let Some(old) = self.tasks.lock().await.remove(id) {
+            old.abort();
+        }
         if tunnel.type_ == "remote" {
             let bound_port = self.ssh.start_remote_forward(
                 &tunnel.host_id,
@@ -107,93 +111,84 @@ impl TunnelManager {
         if tunnel.type_ != "local" && tunnel.type_ != "socks5" {
             return Err(TunnelError::Forward("仅支持 local / remote / socks5 转发类型".to_string()));
         }
-        if tunnel.type_ == "socks5" {
-            return self.start_socks5(&tunnel).await;
-        }
-        let listener = TcpListener::bind(format!("{}:{}", tunnel.listen_addr, tunnel.listen_port))
-            .await
-            .map_err(|e| TunnelError::Forward(e.to_string()))?;
-        let ssh = self.ssh.clone();
-        let db = self.db.clone();
-        let counters = self.counters.clone();
-        let task_id = tunnel.id.clone();
-        let host_id = tunnel.host_id.clone();
-        let remote_host = tunnel.remote_host.clone();
-        let remote_port = tunnel.remote_port;
-        let handle = tokio::spawn(async move {
-            loop {
-                let Ok((stream, _)) = listener.accept().await else { break };
-                let ssh = ssh.clone();
-                let host_id = host_id.clone();
-                let remote_host = remote_host.clone();
-                let counters = counters.clone();
-                let task_id = task_id.clone();
-                tokio::spawn(async move {
-                    // accumulate per-connection bytes into the shared counter
-                    if let Ok((out, input)) = ssh.proxy_local_connection(&host_id, stream, &remote_host, remote_port).await {
-                        let mut c = counters.lock().await;
-                        let entry = c.entry(task_id).or_insert((0, 0));
-                        entry.0 += out;
-                        entry.1 += input;
-                    }
-                });
-            }
-            if let Ok(db) = db.try_lock() {
-                if let Ok(mut tunnels) = db.list_tunnels() {
-                    if let Some(t) = tunnels.iter_mut().find(|t| t.id == task_id) {
-                        t.status = "stopped".to_string();
-                        let _ = db.upsert_tunnel(t);
-                    }
-                }
-            }
-        });
-        self.tasks.lock().await.insert(tunnel.id.clone(), handle);
-        let db = self.db.lock().await;
-        let mut tunnels = db.list_tunnels()?;
-        if let Some(t) = tunnels.iter_mut().find(|t| t.id == id) {
-            t.status = "active".to_string();
-            t.started_at = Some(crate::models::now_iso());
-            db.upsert_tunnel(t)?;
-        }
-        Ok(())
+        return self.start_supervised(&tunnel).await;
     }
 
-    /// SOCKS5 动态转发：本地监听一个 SOCKS5 端口，每个 CONNECT 请求经 SSH
-    /// direct-tcpip 通道转发到任意目标地址（无认证方式，连接级代理）。
-    async fn start_socks5(&self, tunnel: &Tunnel) -> Result<(), TunnelError> {
-        let listener = TcpListener::bind(format!("{}:{}", tunnel.listen_addr, tunnel.listen_port))
-            .await
-            .map_err(|e| TunnelError::Forward(e.to_string()))?;
-        let ssh = self.ssh.clone();
+    /// 监督式转发循环（local / socks5）：bind 监听 + 转发连接，任务因任何
+    /// 原因退出（SSH 闪断、端口瞬占、accept 失败等）后，只要隧道仍标记为
+    /// active，就按指数退避（2s→4s→…→30s 封顶）自动重建，无需人工干预。
+    /// 停止语义：stop() 先把状态置 stopped 再 abort 本监督任务 → 循环看到
+    /// 非 active 即退出，不会"死后复活"。
+    async fn start_supervised(&self, tunnel: &Tunnel) -> Result<(), TunnelError> {
         let db = self.db.clone();
+        let ssh = self.ssh.clone();
         let counters = self.counters.clone();
         let task_id = tunnel.id.clone();
         let host_id = tunnel.host_id.clone();
+        let listen_addr = tunnel.listen_addr.clone();
+        let listen_port = tunnel.listen_port;
+        let remote_host = tunnel.remote_host.clone();
+        let remote_port = tunnel.remote_port;
+        let type_ = tunnel.type_.clone();
+
         let handle = tokio::spawn(async move {
+            let mut backoff_secs: u64 = 0;
             loop {
-                let Ok((stream, _)) = listener.accept().await else { break };
-                let ssh = ssh.clone();
-                let host_id = host_id.clone();
-                let counters = counters.clone();
-                let task_id = task_id.clone();
-                tokio::spawn(async move {
-                    if let Some((out, input)) = Self::serve_socks5(stream, ssh, &host_id).await {
-                        let mut c = counters.lock().await;
-                        let entry = c.entry(task_id).or_insert((0, 0));
-                        entry.0 += out;
-                        entry.1 += input;
-                    }
-                });
-            }
-            if let Ok(db) = db.try_lock() {
-                if let Ok(mut tunnels) = db.list_tunnels() {
-                    if let Some(t) = tunnels.iter_mut().find(|t| t.id == task_id) {
-                        t.status = "stopped".to_string();
-                        let _ = db.upsert_tunnel(t);
-                    }
+                // 退避等待（首轮 0，立即尝试）
+                if backoff_secs > 0 {
+                    tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
                 }
+                // 停止检查：数据库状态必须仍为 active，否则监督循环退出
+                let active = {
+                    let db = db.lock().await;
+                    db.list_tunnels()
+                        .ok()
+                        .and_then(|ts| ts.into_iter().find(|t| t.id == task_id))
+                        .map(|t| t.status == "active")
+                        .unwrap_or(false)
+                };
+                if !active {
+                    break;
+                }
+
+                let addr = format!("{listen_addr}:{listen_port}");
+                let Ok(listener) = TcpListener::bind(&addr).await else {
+                    backoff_secs = next_backoff(backoff_secs);
+                    continue;
+                };
+                // bind 成功 → 重置退避，健康隧道闪断后恢复得够快
+                backoff_secs = 2;
+
+                // 服务连接，直到 listener 关闭 / 任务被 abort
+                loop {
+                    let Ok((stream, _)) = listener.accept().await else { break };
+                    let ssh = ssh.clone();
+                    let host_id = host_id.clone();
+                    let counters = counters.clone();
+                    let task_id = task_id.clone();
+                    let remote_host = remote_host.clone();
+                    let type_ = type_.clone();
+                    tokio::spawn(async move {
+                        let proxied = if type_ == "socks5" {
+                            Self::serve_socks5(stream, ssh, &host_id).await
+                        } else {
+                            ssh.proxy_local_connection(&host_id, stream, &remote_host, remote_port)
+                                .await
+                                .ok()
+                        };
+                        if let Some((out, input)) = proxied {
+                            let mut c = counters.lock().await;
+                            let entry = c.entry(task_id).or_insert((0, 0));
+                            entry.0 += out;
+                            entry.1 += input;
+                        }
+                    });
+                }
+                // accept 循环意外结束 → 退避后重建
+                backoff_secs = next_backoff(backoff_secs);
             }
         });
+
         self.tasks.lock().await.insert(tunnel.id.clone(), handle);
         let db = self.db.lock().await;
         let mut tunnels = db.list_tunnels()?;
@@ -290,4 +285,9 @@ async fn read_port(stream: &mut TcpStream) -> Option<u16> {
     let mut b = [0u8; 2];
     stream.read_exact(&mut b).await.ok()?;
     Some(u16::from_be_bytes(b))
+}
+
+/// 监督循环的退避间隔：0 → 2s → 4s → 8s → … → 30s 封顶。
+fn next_backoff(prev: u64) -> u64 {
+    if prev == 0 { 2 } else { (prev * 2).min(30) }
 }

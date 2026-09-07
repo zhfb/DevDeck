@@ -303,3 +303,143 @@ export const useUi = create<UiState>((set, get) => ({
     set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen }));
   },
 }));
+
+// ---------------------------------------------------------------------------
+// 会话恢复（workspace persistence）
+// ---------------------------------------------------------------------------
+// 只持久化标签元数据，绝不落盘 sessionId（进程级句柄，重启即失效）与
+// activity 标记。SSH / 本地终端标签在恢复时按 Keychain 凭据重建真实会话。
+const WORKSPACE_KEY = "devdeck.workspace.tabs.v1";
+
+export interface PersistedWorkspaceTab {
+  kind: TabKind;
+  title: string;
+  subtitle?: string;
+  env: WorkspaceTab["env"];
+  hostId?: string;
+  containerId?: string;
+  engineId?: string;
+  panel?: string;
+  splitDir?: "h" | "v";
+  /** 拆分窗格仅存 id/title；sessionId 恢复时重建 */
+  panes: { id: string; title: string }[];
+  activePaneId?: string;
+}
+
+function serializeTabs(tabs: WorkspaceTab[]): PersistedWorkspaceTab[] {
+  return tabs.map((t) => ({
+    kind: t.kind,
+    title: t.title,
+    subtitle: t.subtitle,
+    env: t.env,
+    hostId: t.hostId,
+    containerId: t.containerId,
+    engineId: t.engineId,
+    panel: t.panel,
+    splitDir: t.splitDir,
+    panes: (t.panes ?? []).map((p) => ({ id: p.id, title: p.title })),
+    activePaneId: t.activePaneId,
+  }));
+}
+
+/** tabs 变化即持久化（localStorage 足够轻；SQLite 侧不做会话持久化） */
+useWorkspace.subscribe((s) => {
+  try {
+    localStorage.setItem(WORKSPACE_KEY, JSON.stringify(serializeTabs(s.tabs)));
+  } catch {
+    // 存储满/隐私模式降级：忽略，会话恢复能力暂时失效
+  }
+});
+
+/**
+ * 启动时恢复上次的工作区：
+ * - panel / dashboard / host-detail / container-detail：直接恢复（无后端会话）
+ * - ssh：按 Keychain 凭据重建会话（失败则跳过该标签并提示，绝不落入 mock 终端）
+ * - local：重建本地 PTY shell
+ * 由 App 挂载时调用一次。
+ */
+export async function restoreWorkspace(): Promise<void> {
+  let saved: PersistedWorkspaceTab[];
+  try {
+    saved = JSON.parse(localStorage.getItem(WORKSPACE_KEY) ?? "[]") as PersistedWorkspaceTab[];
+  } catch {
+    localStorage.removeItem(WORKSPACE_KEY);
+    return;
+  }
+  if (!Array.isArray(saved) || saved.length === 0) return;
+
+  const ws = useWorkspace.getState();
+  const skipped: string[] = [];
+  for (const t of saved) {
+    if (t.kind === "ssh") {
+      if (!t.hostId) continue;
+      try {
+        const session = await invoke<{ sessionId: string; title: string }>("ssh_connect", {
+          hostId: t.hostId,
+          password: null,
+          cols: 100,
+          rows: 30,
+        });
+        // 拆分窗格恢复：每个 pane 都是独立 SSH 会话，逐一重建；连不上的 pane 跳过
+        const panes: { id: string; title: string; sessionId: string }[] = [];
+        if (t.panes.length > 0) {
+          panes.push({ id: t.panes[0].id, title: t.panes[0].title, sessionId: session.sessionId });
+          for (const p of t.panes.slice(1)) {
+            try {
+              const sp = await invoke<{ sessionId: string; title: string }>("ssh_connect", {
+                hostId: t.hostId,
+                password: null,
+                cols: 100,
+                rows: 30,
+              });
+              panes.push({ id: p.id, title: p.title, sessionId: sp.sessionId });
+            } catch {
+              // 单个 pane 重建失败不阻塞整标签恢复
+            }
+          }
+          if (panes.length === 1) panes.length = 0; // 只剩主会话 → 回到未拆分态
+        }
+        ws.openTab({
+          kind: "ssh",
+          title: t.title,
+          subtitle: t.subtitle,
+          hostId: t.hostId,
+          env: t.env,
+          sessionId: session.sessionId,
+          splitDir: panes.length > 0 ? t.splitDir : undefined,
+          panes,
+          activePaneId: panes.length > 0 ? t.activePaneId : undefined,
+        });
+      } catch {
+        skipped.push(t.title);
+      }
+    } else if (t.kind === "local") {
+      try {
+        const sessionId = await invoke<string>("local_shell_start", { cols: 100, rows: 30 });
+        ws.openTab({
+          kind: "local",
+          title: t.title,
+          subtitle: t.subtitle,
+          env: t.env,
+          sessionId,
+        });
+      } catch {
+        skipped.push(t.title);
+      }
+    } else {
+      ws.openTab({
+        kind: t.kind,
+        title: t.title,
+        subtitle: t.subtitle,
+        env: t.env,
+        hostId: t.hostId,
+        containerId: t.containerId,
+        engineId: t.engineId,
+        panel: t.panel,
+      });
+    }
+  }
+  if (skipped.length > 0) {
+    console.info(`[workspace] 会话恢复跳过（无 Keychain 凭据）: ${skipped.join(", ")}`);
+  }
+}

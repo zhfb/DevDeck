@@ -6,12 +6,15 @@ import {
   Cpu,
   Play,
   RotateCw,
+  Sparkles,
   Square,
   Terminal,
   Trash2,
 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import type { PanelProps } from "@/features/registry";
 import { invoke, isTauri, onEvent } from "@/lib/api";
+import { aiChat, isAiConfigured } from "@/lib/ai";
 import { useContainer, useContainerAction, useEngines } from "@/lib/queries";
 import {
   cn,
@@ -80,6 +83,42 @@ export default function ContainerDetail({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [liveLogs, setLiveLogs] = useState<string[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
+
+  // ---- 日志智能诊断（AI 分析）----
+  const [aiAnalyzing, setAiAnalyzing] = useState(false);
+  const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
+  const [aiAnalysisError, setAiAnalysisError] = useState<string | null>(null);
+
+  const analyzeLogs = async () => {
+    if (!container) return;
+    if (!isAiConfigured()) {
+      setAiAnalysisError("AI 未配置：请到 设置 → AI 助手 填写 Base URL / API Key / 模型");
+      setAiAnalysis(null);
+      return;
+    }
+    const lines = liveLogs.length > 0
+      ? liveLogs
+      : mockLogLines(container).map((l) => `${l.time} ${l.text}`);
+    const sample = lines.slice(-120).join("\n") || "（日志为空）";
+    setAiAnalyzing(true);
+    setAiAnalysis(null);
+    setAiAnalysisError(null);
+    try {
+      const reply = await aiChat([
+        {
+          role: "system",
+          content:
+            "你是 DevDeck 工作台的日志诊断专家。用户会给你一个容器的最近日志，请：1) 判断是否有异常（错误、崩溃、反复重试、OOM 等）；2) 给出最可能的 1-3 个原因；3) 给可执行的排查/修复建议。用中文，简洁分点，不要复述全部日志。",
+        },
+        { role: "user", content: `容器 ${container.name}（镜像 ${container.image}）最近日志：\n${sample}` },
+      ]);
+      setAiAnalysis(reply);
+    } catch (e) {
+      setAiAnalysisError(String(e));
+    } finally {
+      setAiAnalyzing(false);
+    }
+  };
 
   const engine = useMemo(
     () => (container ? (engines ?? []).find((e) => e.id === container.engineId) : undefined),
@@ -318,6 +357,25 @@ export default function ContainerDetail({
 
           {/* Logs */}
           <TabsContent value="logs">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-[12.5px] text-muted">{liveLogs.length > 0 ? "容器实时 stdout/stderr" : "浏览器预览使用模拟日志流"}</span>
+              <Button variant="secondary" size="sm" onClick={() => void analyzeLogs()} disabled={aiAnalyzing}>
+                {aiAnalyzing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 text-primary" />}
+                {aiAnalyzing ? "分析中…" : "AI 分析日志"}
+              </Button>
+            </div>
+            {aiAnalysis && (
+              <div className="mb-2 rounded-lg border border-primary/25 bg-primary/5 p-3">
+                <div className="label-caps mb-1.5 flex items-center gap-1 text-primary">
+                  <Sparkles className="h-3 w-3" />
+                  AI 诊断
+                </div>
+                <div className="max-h-56 overflow-auto whitespace-pre-wrap text-[12.5px] leading-relaxed text-secondary">{aiAnalysis}</div>
+              </div>
+            )}
+            {aiAnalysisError && (
+              <div className="mb-2 rounded-lg border border-danger/30 bg-danger/5 p-3 text-[12.5px] text-danger">{aiAnalysisError}</div>
+            )}
             <div
               ref={logRef}
               className="select-text-all h-[420px] overflow-auto rounded-lg border border-border bg-[#0b0d0f] p-3 font-mono text-[12px] leading-relaxed"
@@ -331,7 +389,6 @@ export default function ContainerDetail({
                     </div>
                   ))}
             </div>
-            <p className="mt-2 text-[12px] text-muted">{liveLogs.length > 0 ? "容器实时 stdout/stderr" : "浏览器预览使用模拟日志流"}</p>
           </TabsContent>
 
           {/* Terminal */}

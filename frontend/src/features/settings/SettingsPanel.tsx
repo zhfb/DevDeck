@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Box, Copy, Database, Download, Play, RefreshCw, Settings, Shield, SlidersHorizontal, Square, Trash2 } from "lucide-react";
+import { Box, Copy, Database, Download, Play, RefreshCw, Settings, Shield, SlidersHorizontal, Sparkles, Square, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import i18n, { setLanguage, SUPPORTED_LANGUAGES } from "@/lib/i18n";
 import { invoke } from "@/lib/api";
@@ -10,6 +10,7 @@ import { useEngines, useIdleLockConfig, useIdleLockConfigSet, useSudoConfig, use
 import { useQueryClient } from "@tanstack/react-query";
 import { useUi } from "@/stores/workspace";
 import { EngineBadge } from "@/components/shared";
+import { getAiConfig, saveAiConfig, aiChat } from "@/lib/ai";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -195,6 +196,38 @@ export default function SettingsPanel(_props: PanelProps) {
   const [dangerConfirm, setDangerConfirm] = useState(true);
   const [eventForward, setEventForward] = useState(false);
   const [throttleState, setThrottleState] = useState(true);
+
+  // ---- AI 助手配置（本地保存，Key 不上报）----
+  const [aiBaseUrl, setAiBaseUrl] = useState(getAiConfig()?.baseUrl ?? "");
+  const [aiApiKey, setAiApiKey] = useState(getAiConfig()?.apiKey ?? "");
+  const [aiModel, setAiModel] = useState(getAiConfig()?.model ?? "");
+  const [aiTesting, setAiTesting] = useState(false);
+
+  const saveAiConfigLocal = () => {
+    if (!aiBaseUrl.trim() || !aiModel.trim()) {
+      toast.error("请填写 Base URL 与模型");
+      return;
+    }
+    saveAiConfig({ baseUrl: aiBaseUrl.trim(), apiKey: aiApiKey.trim(), model: aiModel.trim() });
+    toast.success("AI 配置已保存（仅本机 localStorage）");
+  };
+
+  const testAi = async () => {
+    if (!aiBaseUrl.trim() || !aiModel.trim()) {
+      toast.error("请先填写 Base URL 与模型");
+      return;
+    }
+    saveAiConfig({ baseUrl: aiBaseUrl.trim(), apiKey: aiApiKey.trim(), model: aiModel.trim() });
+    setAiTesting(true);
+    try {
+      const reply = await aiChat([{ role: "user", content: "只回复：ok" }], { maxTokens: 16 });
+      toast.success(`连接成功：${reply.slice(0, 40)}`);
+    } catch (e) {
+      toast.error("连接失败", { description: String(e) });
+    } finally {
+      setAiTesting(false);
+    }
+  };
 
   // ---- 配置导入 / 导出（不含密钥本体）----
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -519,6 +552,47 @@ export default function SettingsPanel(_props: PanelProps) {
               checked={sudoCfg ?? true}
               onCheckedChange={(v) => sudoSave.mutate(!!v, { onError: (e) => toast.error("保存失败", { description: String(e) }) })}
             />
+          </SettingRow>
+        </SettingSection>
+
+        {/* AI 助手 */}
+        <SettingSection icon={Sparkles} title="AI 助手" description="自然语言操作命令面板与日志智能诊断（OpenAI 兼容端点，Key 仅存本机）">
+          <SettingRow title="Base URL" description="如 https://api.openai.com/v1，或 DeepSeek / 硅基流动 / Ollama 等兼容网关">
+            <Input
+              value={aiBaseUrl}
+              onChange={(e) => setAiBaseUrl(e.target.value)}
+              placeholder="https://api.openai.com/v1"
+              className="w-72"
+            />
+          </SettingRow>
+          <SettingRow title="API Key" description="仅保存在本机 localStorage，仅用于 Authorization 请求头">
+            <Input
+              type="password"
+              value={aiApiKey}
+              onChange={(e) => setAiApiKey(e.target.value)}
+              placeholder="sk-…"
+              className="w-72"
+            />
+          </SettingRow>
+          <SettingRow title="模型" description="如 gpt-4o-mini / deepseek-chat / qwen-plus">
+            <Input
+              value={aiModel}
+              onChange={(e) => setAiModel(e.target.value)}
+              placeholder="gpt-4o-mini"
+              className="w-44"
+            />
+          </SettingRow>
+          <SettingRow title="保存并测试" description="先保存配置，再发一条探针请求验证连通性">
+            <div className="flex items-center gap-2">
+              <Button variant="secondary" size="sm" onClick={saveAiConfigLocal}>
+                <Database />
+                保存配置
+              </Button>
+              <Button variant="secondary" size="sm" onClick={() => void testAi()} disabled={aiTesting}>
+                <RefreshCw className={cn(aiTesting && "animate-spin")} />
+                {aiTesting ? "测试中…" : "测试连接"}
+              </Button>
+            </div>
           </SettingRow>
         </SettingSection>
 

@@ -9,7 +9,7 @@ import TrayEvents from "./app/TrayEvents";
 import { ErrorBoundary } from "./components/error-boundary";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { HostKeyDialog } from "./components/HostKeyDialog";
-import { useWorkspace } from "./stores/workspace";
+import { useWorkspace, restoreWorkspace } from "./stores/workspace";
 import { PowerController } from "./stores/power";
 import { useIdleLock } from "./stores/idleLock";
 import { useAppShortcuts } from "./lib/hotkeys";
@@ -43,6 +43,8 @@ export default function App() {
 
   useEffect(() => {
     void initIdleLock();
+    // 恢复上次的工作区标签（SSH/本地终端按 Keychain 凭据重建会话）
+    void restoreWorkspace();
   }, [initIdleLock]);
 
   useAppShortcuts();
