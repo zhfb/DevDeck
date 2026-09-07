@@ -250,6 +250,31 @@ html[data-tauri="true"] body {
 html[data-tauri="true"] .app-root {
   background: transparent;
 }
+/*
+ * 原生 vibrancy 是半透明材质，会透出窗口背后的内容：
+ * 背后是浅色壁纸/浅色窗口时，侧边栏与任务栏会"发灰"。
+ * 因此在透明窗口下给 chrome 材质叠一层更实的底色，
+ * 保证深色 UI 的侧边栏/任务栏无论背后深浅都稳定呈深色；
+ * 浅色主题则对应叠加浅色底色。仍保留 blur 透出轻微毛玻璃质感。
+ */
+html[data-tauri="true"] .chrome-material {
+  background-color: rgba(17, 19, 24, 0.9);
+}
+html[data-tauri="true"] .chrome-material-strong {
+  background-color: rgba(15, 17, 21, 0.94);
+}
+html[data-tauri="true"] .chrome-material-tint {
+  background-color: rgba(17, 19, 24, 0.8);
+}
+html[data-tauri="true"][data-theme="light"] .chrome-material {
+  background-color: rgba(255, 255, 255, 0.88);
+}
+html[data-tauri="true"][data-theme="light"] .chrome-material-strong {
+  background-color: rgba(255, 255, 255, 0.92);
+}
+html[data-tauri="true"][data-theme="light"] .chrome-material-tint {
+  background-color: rgba(255, 255, 255, 0.8);
+}
 
 @layer utilities {
   /*
